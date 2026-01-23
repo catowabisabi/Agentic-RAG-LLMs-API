@@ -6,9 +6,11 @@ This module starts:
 1. FastAPI server with WebSocket support
 2. MCP server (optional)
 3. Multi-agent system with all agents
+4. Next.js UI webapp (optional)
 
 Usage:
-    python main.py                 # Start API server
+    python main.py                 # Start API server only
+    python main.py --ui            # Start API server and UI
     python main.py --mcp           # Start MCP server only
     python main.py --api --mcp     # Start both servers
 """
@@ -20,6 +22,7 @@ import asyncio
 import logging
 import argparse
 import signal
+import subprocess
 from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -110,6 +113,52 @@ def run_api_server(config: Config):
         reload=config.API_RELOAD,
         log_level=config.LOG_LEVEL.lower()
     )
+
+
+def run_ui_server(config: Config):
+    """Run the Next.js UI server"""
+    ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+    
+    if not os.path.exists(ui_path):
+        logger.error(f"UI directory not found: {ui_path}")
+        return
+    
+    logger.info(f"Starting UI server on port {config.UI_PORT}")
+    
+    # Check if node_modules exists
+    node_modules = os.path.join(ui_path, "node_modules")
+    if not os.path.exists(node_modules):
+        logger.info("Installing UI dependencies...")
+        subprocess.run(["npm", "install"], cwd=ui_path, shell=True)
+    
+    # Start the Next.js dev server
+    subprocess.run(
+        ["npm", "run", "dev"],
+        cwd=ui_path,
+        shell=True,
+        env={**os.environ, "NEXT_PUBLIC_API_URL": f"http://localhost:{config.API_PORT}"}
+    )
+
+
+async def run_api_and_ui(config: Config):
+    """Run both API and UI servers concurrently"""
+    logger.info("Starting API and UI servers...")
+    
+    loop = asyncio.get_event_loop()
+    
+    # Run API server in a thread
+    api_task = loop.run_in_executor(None, run_api_server, config)
+    
+    # Wait a moment for API to start
+    await asyncio.sleep(2)
+    
+    # Run UI server in a thread
+    ui_task = loop.run_in_executor(None, run_ui_server, config)
+    
+    try:
+        await asyncio.gather(api_task, ui_task)
+    except asyncio.CancelledError:
+        logger.info("Servers shutting down...")
 
 
 async def run_mcp_server():
@@ -213,6 +262,7 @@ def main():
         epilog="""
 Examples:
     python main.py                 # Start API server (default)
+    python main.py --ui            # Start API server with UI
     python main.py --api           # Start API server only
     python main.py --mcp           # Start MCP server only
     python main.py --api --mcp     # Start both servers
@@ -223,6 +273,8 @@ Examples:
     
     parser.add_argument('--api', action='store_true',
                         help='Start the API server')
+    parser.add_argument('--ui', action='store_true',
+                        help='Start the API server with UI webapp')
     parser.add_argument('--mcp', action='store_true',
                         help='Start the MCP server')
     parser.add_argument('--interactive', '-i', action='store_true',
@@ -287,13 +339,24 @@ Examples:
         # Interactive CLI mode
         run_interactive_mode(config)
         
-    elif args.mcp and not args.api:
+    elif args.mcp and not args.api and not args.ui:
         # MCP server only
         asyncio.run(run_mcp_server())
         
     elif args.api and args.mcp:
-        # Both servers
+        # Both API and MCP servers
         asyncio.run(run_both_servers(config))
+    
+    elif args.ui:
+        # API server with UI
+        print("="*60)
+        print("🚀 Starting Agentic RAG System with UI")
+        print("="*60)
+        print(f"📡 API Server: http://localhost:{config.API_PORT}")
+        print(f"🌐 UI Server:  http://localhost:{config.UI_PORT}")
+        print(f"🔐 Login: guest / beourguest")
+        print("="*60)
+        asyncio.run(run_api_and_ui(config))
         
     else:
         # Default: API server only

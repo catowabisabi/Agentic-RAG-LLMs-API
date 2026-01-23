@@ -1,10 +1,81 @@
 import os
 import argparse
-from typing import List
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from tools.retriever import DocumentRetriever
 from config.config import Config
+
+
+class DocumentLoader:
+    """Document loader and manager for the vector database"""
+    
+    def __init__(self):
+        self.config = Config()
+    
+    def list_collections(self) -> List[str]:
+        """List all available collections in the vector database"""
+        collections = []
+        vectordb_path = Path(self.config.CHROMA_DB_PATH)
+        
+        if vectordb_path.exists():
+            # Each subdirectory is a collection
+            for item in vectordb_path.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    collections.append(item.name)
+        
+        # Always include default collection
+        if "default" not in collections:
+            collections.append("default")
+        
+        return sorted(collections)
+    
+    def delete_collection(self, collection_name: str) -> bool:
+        """Delete a collection from the vector database"""
+        import shutil
+        
+        collection_path = Path(self.config.CHROMA_DB_PATH) / collection_name
+        
+        if collection_path.exists():
+            try:
+                shutil.rmtree(collection_path)
+                return True
+            except Exception as e:
+                print(f"Error deleting collection: {e}")
+                return False
+        return False
+    
+    def create_collection(self, name: str, description: Optional[str] = None) -> bool:
+        """Create a new collection"""
+        collection_path = Path(self.config.CHROMA_DB_PATH) / name
+        
+        try:
+            collection_path.mkdir(parents=True, exist_ok=True)
+            
+            # Create metadata file
+            metadata = {
+                "name": name,
+                "description": description or "",
+                "created_at": str(Path(collection_path).stat().st_ctime) if collection_path.exists() else None
+            }
+            
+            metadata_file = collection_path / "collection_metadata.json"
+            import json
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"Error creating collection: {e}")
+            return False
+    
+    def load_file(self, file_path: str) -> str:
+        """Load content from a file"""
+        return load_text_file(file_path)
+    
+    def load_directory(self, directory: str) -> tuple:
+        """Load all documents from a directory"""
+        return load_documents_from_directory(directory)
 
 
 def load_text_file(file_path: str) -> str:

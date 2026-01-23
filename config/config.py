@@ -49,8 +49,13 @@ class Config:
     
     # API Settings
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
-    API_PORT = int(os.getenv("API_PORT", "8000"))
+    API_PORT = int(os.getenv("API_PORT", "1130"))
     API_RELOAD = os.getenv("API_RELOAD", "false").lower() == "true"
+    
+    # UI Settings
+    UI_ENABLED = os.getenv("UI_ENABLED", "true").lower() == "true"
+    UI_PORT = int(os.getenv("UI_PORT", "1131"))
+    UI_PATH = os.getenv("UI_PATH", "./ui")
     
     # MCP Settings
     MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"

@@ -8,7 +8,7 @@ services:
       dockerfile: docker/Dockerfile
     container_name: agentic-rag-api
     ports:
-      - "8000:8000"
+      - "1130:1130"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -19,7 +19,7 @@ services:
       - CHROMA_DB_PATH=/app/data/vectordb
       - MEMORY_DB_PATH=/app/data/memory
       - API_HOST=0.0.0.0
-      - API_PORT=8000
+      - API_PORT=1130
       - MCP_ENABLED=true
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
@@ -29,11 +29,27 @@ services:
       - agentic-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:1130/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # Demo UI (Next.js)
+  ui:
+    build:
+      context: ../ui
+      dockerfile: Dockerfile
+    container_name: agentic-rag-ui
+    ports:
+      - "1131:1131"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:1130
+    depends_on:
+      - api
+    networks:
+      - agentic-network
+    restart: unless-stopped
 
   # MCP Server (optional, for external MCP clients)
   mcp:

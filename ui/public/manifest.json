@@ -1,0 +1,9 @@
+{
+  "name": "Agentic RAG",
+  "short_name": "AgenticRAG",
+  "description": "Multi-Agent RAG API Demo",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#3b82f6"
+}

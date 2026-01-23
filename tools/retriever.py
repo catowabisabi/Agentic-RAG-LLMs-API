@@ -34,8 +34,9 @@ from config.config import Config
 class DocumentRetriever:
     """Handles document retrieval from vector database"""
     
-    def __init__(self):
+    def __init__(self, collection_name: str = "default"):
         self.config = Config()
+        self.collection_name = collection_name
         self.embeddings = OpenAIEmbeddings(
             model=self.config.EMBEDDING_MODEL,
             api_key=self.config.OPENAI_API_KEY
@@ -46,19 +47,23 @@ class DocumentRetriever:
     def _initialize_vectorstore(self):
         """Initialize or load existing vector store"""
         try:
-            if os.path.exists(self.config.CHROMA_DB_PATH):
+            persist_directory = os.path.join(self.config.CHROMA_DB_PATH, self.collection_name)
+            if os.path.exists(persist_directory):
                 self.vectorstore = Chroma(
-                    persist_directory=self.config.CHROMA_DB_PATH,
+                    persist_directory=persist_directory,
+                    collection_name=self.collection_name,
                     embedding_function=self.embeddings
                 )
-                print(f"Loaded existing vector store from {self.config.CHROMA_DB_PATH}")
+                print(f"Loaded existing vector store from {persist_directory}")
             else:
                 # Create empty vector store
+                os.makedirs(persist_directory, exist_ok=True)
                 self.vectorstore = Chroma(
-                    persist_directory=self.config.CHROMA_DB_PATH,
+                    persist_directory=persist_directory,
+                    collection_name=self.collection_name,
                     embedding_function=self.embeddings
                 )
-                print(f"Created new vector store at {self.config.CHROMA_DB_PATH}")
+                print(f"Created new vector store at {persist_directory}")
         except Exception as e:
             print(f"Error initializing vector store: {e}")
             self.vectorstore = None
@@ -110,6 +115,51 @@ class DocumentRetriever:
             print(f"Error adding documents: {e}")
             return False
     
+    def add_document(self, content: str, metadata: Optional[Dict] = None) -> Optional[str]:
+        """Add a single document to the vector store and return its ID"""
+        if not self.vectorstore:
+            print("Vector store not initialized")
+            return None
+        
+        try:
+            import uuid
+            doc_id = str(uuid.uuid4())
+            
+            # Split content into chunks if needed
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.config.CHUNK_SIZE,
+                chunk_overlap=self.config.CHUNK_OVERLAP,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+            chunks = text_splitter.split_text(content)
+            
+            # Prepare metadata for each chunk
+            chunk_metadatas = []
+            for i, _ in enumerate(chunks):
+                chunk_metadata = {
+                    **(metadata or {}),
+                    "doc_id": doc_id,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks)
+                }
+                chunk_metadatas.append(chunk_metadata)
+            
+            # Add to vector store
+            self.vectorstore.add_texts(
+                texts=chunks,
+                metadatas=chunk_metadatas
+            )
+            
+            # Persist changes
+            self.vectorstore.persist()
+            print(f"Added document {doc_id} with {len(chunks)} chunks")
+            return doc_id
+            
+        except Exception as e:
+            print(f"Error adding document: {e}")
+            return None
+    
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Retrieve relevant documents for a query"""
         if not self.vectorstore:
@@ -148,18 +198,33 @@ class DocumentRetriever:
             collection = self.vectorstore._collection
             stats = {
                 "total_documents": collection.count(),
-                "collection_name": collection.name if hasattr(collection, 'name') else "unknown"
+                "collection_name": self.collection_name
             }
             return stats
         except Exception as e:
             return {"error": f"Error getting stats: {e}"}
+    
+    def get_collection_info(self) -> Dict[str, Any]:
+        """Get detailed information about the collection"""
+        if not self.vectorstore:
+            return {"error": "Vector store not initialized"}
+        
+        try:
+            collection = self.vectorstore._collection
+            return {
+                "name": self.collection_name,
+                "document_count": collection.count(),
+                "path": os.path.join(self.config.CHROMA_DB_PATH, self.collection_name)
+            }
+        except Exception as e:
+            return {"error": f"Error getting collection info: {e}"}
 
 
 class AdvancedRetriever(DocumentRetriever):
     """Extended retriever with advanced features"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, collection_name: str = "default"):
+        super().__init__(collection_name=collection_name)
         self.query_history = []
     
     def hybrid_retrieve(self, query: str, top_k: int = 5, rerank: bool = True) -> List[Dict[str, Any]]:
