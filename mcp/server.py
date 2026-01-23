@@ -12,7 +12,12 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+try:
+    from mcp.server.stdio import stdio_server  # type: ignore
+except Exception:
+    # stdio_server may not be available in the current environment (linter/CI or missing package).
+    # Set to None and handle at runtime to provide a clear error message when attempting to run.
+    stdio_server = None  # type: ignore
 from mcp.types import (
     Resource,
     Tool,
@@ -682,6 +687,11 @@ class MCPAgentServer:
     
     async def run(self):
         """Run the MCP server"""
+        if stdio_server is None:
+            raise RuntimeError(
+                "stdio_server is unavailable; install the 'mcp' package that provides mcp.server.stdio "
+                "or provide an alternative stdio server implementation."
+            )
         async with stdio_server() as (read_stream, write_stream):
             await self.server.run(
                 read_stream,

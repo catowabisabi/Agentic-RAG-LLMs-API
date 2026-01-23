@@ -223,6 +223,149 @@ class WebSocketManager:
         for client_id in disconnected:
             await self.disconnect_client(client_id)
     
+    # ============== UI Box Management ==============
+    
+    async def broadcast_agent_box(
+        self, 
+        agent_name: str, 
+        box_type: str,
+        title: str,
+        content: Any,
+        status: str = "active",
+        progress: float = None,
+        metadata: Dict[str, Any] = None
+    ):
+        """
+        Broadcast an agent status box to all frontend clients.
+        Frontend can dynamically create/update boxes based on agent_name.
+        
+        Args:
+            agent_name: Unique identifier for this agent
+            box_type: Type of box ("thinking", "working", "result", "error", "queue", "streaming")
+            title: Display title for the box
+            content: Content to display (can be string, dict, or list)
+            status: Box status ("active", "completed", "error", "waiting", "streaming")
+            progress: Optional progress percentage (0-100)
+            metadata: Additional metadata for frontend rendering
+        """
+        box_data = {
+            "type": "agent_box_update",
+            "agent_name": agent_name,
+            "box_type": box_type,
+            "title": title,
+            "content": content,
+            "status": status,
+            "progress": progress,
+            "timestamp": datetime.now().isoformat(),
+            "metadata": metadata or {}
+        }
+        
+        await self.broadcast_to_clients(box_data)
+        logger.debug(f"Agent box update broadcast: {agent_name} - {box_type}")
+    
+    async def broadcast_thinking_step(
+        self,
+        agent_name: str,
+        step_number: int,
+        thought: str,
+        action: str = None,
+        observation: str = None
+    ):
+        """Broadcast a thinking step for ReAct-style agents"""
+        await self.broadcast_agent_box(
+            agent_name=agent_name,
+            box_type="thinking",
+            title=f"Step {step_number}",
+            content={
+                "thought": thought,
+                "action": action,
+                "observation": observation
+            },
+            status="active"
+        )
+    
+    async def broadcast_streaming_token(
+        self,
+        agent_name: str,
+        token: str,
+        is_complete: bool = False
+    ):
+        """Broadcast a streaming token for real-time text generation"""
+        await self.broadcast_to_clients({
+            "type": "streaming_token",
+            "agent_name": agent_name,
+            "token": token,
+            "is_complete": is_complete,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    async def broadcast_queue_status(self, queue_position: int, total_queued: int, estimated_wait: float = None):
+        """Broadcast queue status to clients"""
+        await self.broadcast_to_clients({
+            "type": "queue_status",
+            "queue_position": queue_position,
+            "total_queued": total_queued,
+            "estimated_wait_seconds": estimated_wait,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    async def broadcast_concurrency_status(
+        self,
+        active_agents: List[str],
+        queued_count: int,
+        max_concurrent: int
+    ):
+        """Broadcast the current concurrency status"""
+        await self.broadcast_to_clients({
+            "type": "concurrency_status",
+            "active_agents": active_agents,
+            "active_count": len(active_agents),
+            "queued_count": queued_count,
+            "max_concurrent": max_concurrent,
+            "slots_available": max(0, max_concurrent - len(active_agents)),
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    async def broadcast_agent_result(
+        self,
+        agent_name: str,
+        result_type: str,
+        result: Dict[str, Any],
+        execution_time: float = None
+    ):
+        """Broadcast an agent's structured result"""
+        await self.broadcast_agent_box(
+            agent_name=agent_name,
+            box_type="result",
+            title=f"{agent_name} Result",
+            content=result,
+            status="completed",
+            metadata={
+                "result_type": result_type,
+                "execution_time": execution_time
+            }
+        )
+    
+    async def broadcast_multi_agent_status(self, agents_info: List[Dict[str, Any]]):
+        """
+        Broadcast status of multiple agents at once.
+        Useful for dashboard-style UI with multiple agent boxes.
+        
+        Args:
+            agents_info: List of dicts with agent information:
+                - name: Agent name
+                - status: "idle", "working", "completed", "error", "queued"
+                - current_task: What the agent is doing
+                - progress: Optional progress percentage
+        """
+        await self.broadcast_to_clients({
+            "type": "multi_agent_status",
+            "agents": agents_info,
+            "total_active": sum(1 for a in agents_info if a.get("status") == "working"),
+            "total_queued": sum(1 for a in agents_info if a.get("status") == "queued"),
+            "timestamp": datetime.now().isoformat()
+        })
+    
     async def send_agent_message_to_clients(self, message: AgentMessage):
         """Forward an agent message to subscribed clients"""
         data = {

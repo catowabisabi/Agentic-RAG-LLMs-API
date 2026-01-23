@@ -3,17 +3,74 @@ Agent Registry
 
 Central registry for all agents in the multi-agent system.
 Manages agent lifecycle, discovery, and coordination.
+Includes concurrency control with max 5 simultaneous agents.
 """
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Type, Any
+from typing import Dict, List, Optional, Type, Any, Callable
 from datetime import datetime
+from collections import deque
 
 from .base_agent import BaseAgent
 from .message_protocol import AgentStatus
 
 logger = logging.getLogger(__name__)
+
+
+class ConcurrencyController:
+    """
+    Controls concurrent agent execution.
+    Maximum 5 agents can work simultaneously.
+    Additional tasks are queued.
+    """
+    
+    def __init__(self, max_concurrent: int = 5):
+        self.max_concurrent = max_concurrent
+        self._running_count = 0
+        self._queue: deque = deque()
+        self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition(self._lock)
+        
+    async def acquire(self, agent_name: str) -> bool:
+        """
+        Acquire a slot for agent execution.
+        Returns True when slot is acquired, blocks if queue is full.
+        """
+        async with self._condition:
+            # Add to queue if at capacity
+            if self._running_count >= self.max_concurrent:
+                self._queue.append(agent_name)
+                logger.info(f"Agent {agent_name} queued. Position: {len(self._queue)}")
+                
+                # Wait until we're at the front and there's capacity
+                while (self._running_count >= self.max_concurrent or 
+                       (self._queue and self._queue[0] != agent_name)):
+                    await self._condition.wait()
+                
+                # Remove from queue when it's our turn
+                if self._queue and self._queue[0] == agent_name:
+                    self._queue.popleft()
+            
+            self._running_count += 1
+            logger.info(f"Agent {agent_name} started. Running: {self._running_count}/{self.max_concurrent}")
+            return True
+    
+    async def release(self, agent_name: str):
+        """Release a slot after agent completes"""
+        async with self._condition:
+            self._running_count = max(0, self._running_count - 1)
+            logger.info(f"Agent {agent_name} completed. Running: {self._running_count}/{self.max_concurrent}")
+            self._condition.notify_all()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current concurrency status"""
+        return {
+            "running": self._running_count,
+            "max_concurrent": self.max_concurrent,
+            "queued": len(self._queue),
+            "queue_order": list(self._queue)
+        }
 
 
 class AgentRegistry:
@@ -24,6 +81,7 @@ class AgentRegistry:
     - Agent registration and discovery
     - Lifecycle management
     - Agent capability lookup
+    - Concurrency control (max 5 simultaneous agents)
     """
     
     _instance = None
@@ -49,10 +107,13 @@ class AgentRegistry:
         # Agent type registry (for factory pattern)
         self._agent_types: Dict[str, Type[BaseAgent]] = {}
         
+        # Concurrency controller
+        self._concurrency = ConcurrencyController(max_concurrent=5)
+        
         # Lock for thread safety
         self._lock = asyncio.Lock()
         
-        logger.info("AgentRegistry initialized")
+        logger.info("AgentRegistry initialized with max 5 concurrent agents")
     
     # ============== Agent Registration ==============
     
@@ -230,3 +291,34 @@ class AgentRegistry:
             "current_task": agent.current_task.task_id if agent.current_task else None,
             "timestamp": datetime.now().isoformat()
         }
+    
+    # ============== Concurrency Control ==============
+    
+    async def acquire_execution_slot(self, agent_name: str) -> bool:
+        """Acquire a slot for agent execution (max 5 concurrent)"""
+        return await self._concurrency.acquire(agent_name)
+    
+    async def release_execution_slot(self, agent_name: str):
+        """Release execution slot when agent completes"""
+        await self._concurrency.release(agent_name)
+    
+    def get_concurrency_status(self) -> Dict[str, Any]:
+        """Get current concurrency status"""
+        return self._concurrency.get_status()
+    
+    async def execute_with_concurrency(
+        self, 
+        agent_name: str, 
+        task_fn: Callable,
+        *args, 
+        **kwargs
+    ) -> Any:
+        """
+        Execute a task with concurrency control.
+        Automatically acquires and releases execution slot.
+        """
+        try:
+            await self.acquire_execution_slot(agent_name)
+            return await task_fn(*args, **kwargs)
+        finally:
+            await self.release_execution_slot(agent_name)
