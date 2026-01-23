@@ -1,0 +1,14 @@
+langchain
+langchain-community
+langchain-openai
+openai
+langchain-chroma
+langgraph
+chromadb
+python-dotenv
+tiktoken
+faiss-cpu
+sentence-transformers
+fastapi
+uvicorn
+pydantic

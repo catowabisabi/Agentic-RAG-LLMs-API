@@ -1,0 +1,31 @@
+# MCP Server Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    mcp \
+    langchain \
+    langchain-openai \
+    chromadb \
+    pydantic>=2.0 \
+    python-dotenv
+
+# Copy application code
+COPY . /app
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Expose MCP port
+EXPOSE 8001
+
+# Run MCP server
+CMD ["python", "-m", "mcp.server"]

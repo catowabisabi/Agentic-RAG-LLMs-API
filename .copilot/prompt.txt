@@ -1,0 +1,21 @@
+使用繁體中文回應
+
+非常重要: NodeBB-Plugin-Life-Services-Folder 是安裝在NodeBB 的plugin, 用作控制life services
+
+
+呼叫項目使用完整Path
+Flutter App Root為: C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\
+如果有必要建立TODO list, 使用folder: C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\Todo\todo_YYYY_MM_DD.txt
+NodeBB Server在本在, 呼叫Flutter APP 之前, 使用C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\cors-proxy.js
+NodeBB 有官方api doc, 使用api-reference\read.yaml 和api-reference\write.yaml 所說明的endpoint去建立介面
+重要的結構和指示, 可以使用memory.json作為記憶
+用戶分為訪客用戶, 普通用戶, 管理員和Owner 
+訪客可以讀取post, 和回應, 普通用戶可以like, unlike, delike, post, 和回應, 管理員可以delete post, 和ban user, owner有更大的權力, 包括加減分類
+
+
+如果發現有port位置使用佔用而不能開Flutter, kill application
+port 4567 是nodebb Server
+port 3001 是 cros server
+
+
+

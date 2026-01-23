@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Main API Server
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: agentic-rag-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - MAX_TOKENS=${MAX_TOKENS:-2000}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - CHROMA_DB_PATH=/app/data/vectordb
+      - MEMORY_DB_PATH=/app/data/memory
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - MCP_ENABLED=true
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../rag-database:/app/data
+      - ../documents:/app/documents
+    networks:
+      - agentic-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # MCP Server (optional, for external MCP clients)
+  mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mcp
+    container_name: agentic-rag-mcp
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
+      - CHROMA_DB_PATH=/app/data/vectordb
+    volumes:
+      - ../rag-database:/app/data
+    networks:
+      - agentic-network
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ChromaDB (optional standalone)
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: agentic-rag-chromadb
+    ports:
+      - "8002:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - agentic-network
+    restart: unless-stopped
+    profiles:
+      - standalone-db
+
+  # Redis (for production message queue)
+  redis:
+    image: redis:alpine
+    container_name: agentic-rag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - agentic-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+networks:
+  agentic-network:
+    driver: bridge
+
+volumes:
+  chroma-data:
+  redis-data:
