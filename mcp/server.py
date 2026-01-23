@@ -18,17 +18,71 @@ except Exception:
     # stdio_server may not be available in the current environment (linter/CI or missing package).
     # Set to None and handle at runtime to provide a clear error message when attempting to run.
     stdio_server = None  # type: ignore
-from mcp.types import (
-    Resource,
-    Tool,
-    TextContent,
-    ImageContent,
-    EmbeddedResource,
-    Prompt,
-    PromptMessage,
-    PromptArgument
-)
 from pydantic import AnyUrl
+
+# Attempt a runtime import to avoid static analyzer unresolved-import errors in editors;
+# fall back to local dataclass definitions if mcp.types is not available.
+try:
+    import importlib
+    mcp_types = importlib.import_module("mcp.types")
+    Resource = getattr(mcp_types, "Resource")
+    Tool = getattr(mcp_types, "Tool")
+    TextContent = getattr(mcp_types, "TextContent")
+    ImageContent = getattr(mcp_types, "ImageContent")
+    EmbeddedResource = getattr(mcp_types, "EmbeddedResource")
+    Prompt = getattr(mcp_types, "Prompt")
+    PromptMessage = getattr(mcp_types, "PromptMessage")
+    PromptArgument = getattr(mcp_types, "PromptArgument")
+except Exception:
+    # Fallback definitions for environments without 'mcp.types'
+    from dataclasses import dataclass
+    from typing import Optional, List, Dict, Any
+
+    @dataclass
+    class Resource:
+        uri: AnyUrl
+        name: str = ""
+        description: str = ""
+        mimeType: Optional[str] = None
+
+    @dataclass
+    class Tool:
+        name: str
+        description: str = ""
+        inputSchema: Dict[str, Any] = None
+
+    @dataclass
+    class TextContent:
+        type: str
+        text: str
+
+    @dataclass
+    class ImageContent:
+        type: str
+        url: str
+        alt: Optional[str] = None
+
+    @dataclass
+    class EmbeddedResource:
+        uri: AnyUrl
+        description: Optional[str] = None
+
+    @dataclass
+    class Prompt:
+        name: str
+        description: str = ""
+        arguments: List[Any] = None
+
+    @dataclass
+    class PromptMessage:
+        role: str
+        content: Any
+
+    @dataclass
+    class PromptArgument:
+        name: str
+        description: str = ""
+        required: bool = False
 
 from agents.shared_services.agent_registry import AgentRegistry
 from agents.shared_services.websocket_manager import WebSocketManager

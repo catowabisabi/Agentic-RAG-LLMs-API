@@ -1,7 +1,30 @@
 from typing import List, Dict, Any, Optional
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    # Fallback splitter if langchain is not installed or import fails
+    class RecursiveCharacterTextSplitter:
+        def __init__(self, chunk_size=1000, chunk_overlap=200, separators=None):
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+            self.separators = separators or ["\n\n", "\n", " ", ""]
+        def split_text(self, text: str):
+            if not text:
+                return []
+            n = max(1, int(self.chunk_size))
+            o = max(0, int(self.chunk_overlap))
+            chunks = []
+            i = 0
+            L = len(text)
+            while i < L:
+                end = min(i + n, L)
+                chunks.append(text[i:end])
+                if end == L:
+                    break
+                i = max(0, end - o)
+            return chunks
 from langchain.schema import Document
 import os
 

@@ -20,7 +20,32 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    # Fallback minimal implementation if langchain.text_splitter is not installed
+    class RecursiveCharacterTextSplitter:
+        def __init__(self, chunk_size=1000, chunk_overlap=200, length_function=len):
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+            self.length_function = length_function
+
+        def split_text(self, text: str) -> list:
+            if not text:
+                return []
+            chunks = []
+            # compute step ensuring it's positive
+            step = self.chunk_size - self.chunk_overlap
+            if step <= 0:
+                step = self.chunk_size
+            start = 0
+            text_len = self.length_function(text)
+            while start < text_len:
+                end = min(start + self.chunk_size, text_len)
+                chunks.append(text[start:end])
+                start += step
+            return chunks
+
 from langchain_core.documents import Document
 
 from config.config import (
