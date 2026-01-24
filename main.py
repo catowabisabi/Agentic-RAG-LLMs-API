@@ -80,7 +80,7 @@ def create_agents():
     registry.register_agent(TranslateAgent())
     registry.register_agent(CalculationAgent())
     
-    logger.info(f"Registered {len(registry.agents)} agents")
+    logger.info(f"Registered {len(registry._agents)} agents")
     
     return registry
 

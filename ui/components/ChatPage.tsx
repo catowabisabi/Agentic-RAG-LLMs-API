@@ -12,12 +12,33 @@ interface Message {
   agents_involved?: string[];
 }
 
+const STORAGE_KEY = 'agentic-rag-chat';
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const { messages: savedMessages, conversationId: savedConvId } = JSON.parse(saved);
+        if (savedMessages) setMessages(savedMessages);
+        if (savedConvId) setConversationId(savedConvId);
+      } catch (e) {
+        console.error('Failed to load chat history:', e);
+      }
+    }
+  }, []);
+
+  // Save to localStorage on change
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages, conversationId }));
+  }, [messages, conversationId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -85,6 +106,7 @@ export default function ChatPage() {
   const clearChat = () => {
     setMessages([]);
     setConversationId(null);
+    localStorage.removeItem(STORAGE_KEY);
   };
 
   return (

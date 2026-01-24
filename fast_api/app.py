@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def create_agents():
+async def create_agents():
     """Create and register all agents"""
     registry = AgentRegistry()
     
@@ -54,23 +54,23 @@ def create_agents():
     from agents.auxiliary.calculation_agent import CalculationAgent
     
     # Register core agents
-    registry.register_agent(ManagerAgent())
-    registry.register_agent(RAGAgent())
-    registry.register_agent(MemoryAgent())
-    registry.register_agent(NotesAgent())
-    registry.register_agent(ValidationAgent())
-    registry.register_agent(PlanningAgent())
-    registry.register_agent(ThinkingAgent())
-    registry.register_agent(RolesAgent())
+    await registry.register_agent(ManagerAgent())
+    await registry.register_agent(RAGAgent())
+    await registry.register_agent(MemoryAgent())
+    await registry.register_agent(NotesAgent())
+    await registry.register_agent(ValidationAgent())
+    await registry.register_agent(PlanningAgent())
+    await registry.register_agent(ThinkingAgent())
+    await registry.register_agent(RolesAgent())
     
     # Register auxiliary agents
-    registry.register_agent(DataAgent())
-    registry.register_agent(ToolAgent())
-    registry.register_agent(SummarizeAgent())
-    registry.register_agent(TranslateAgent())
-    registry.register_agent(CalculationAgent())
+    await registry.register_agent(DataAgent())
+    await registry.register_agent(ToolAgent())
+    await registry.register_agent(SummarizeAgent())
+    await registry.register_agent(TranslateAgent())
+    await registry.register_agent(CalculationAgent())
     
-    logger.info(f"Registered {len(registry.agents)} agents")
+    logger.info(f"Registered {len(registry._agents)} agents")
     
     return registry
 
@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting API server...")
     
     # Create and start agents
-    registry = create_agents()
+    registry = await create_agents()
     await registry.start_all_agents()
     
     logger.info("All agents started")

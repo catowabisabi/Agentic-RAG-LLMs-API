@@ -81,14 +81,13 @@ async def send_message(request: ChatRequest):
     task = TaskAssignment(
         task_id=message_id,
         task_type="process_query",
+        description=f"Process user query: {request.message[:100]}",
         input_data={
             "query": request.message,
             "context": request.context,
             "conversation_id": conversation_id,
             "history": conversations[conversation_id][-10:]  # Last 10 messages
-        },
-        context=request.message,
-        priority=1
+        }
     )
     
     # Send to manager

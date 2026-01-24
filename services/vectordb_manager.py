@@ -48,12 +48,14 @@ except Exception:
 
 from langchain_core.documents import Document
 
-from config.config import (
-    CHROMA_DB_PATH,
-    OPENAI_API_KEY,
-    EMBEDDING_MODEL,
-    DEFAULT_MODEL
-)
+from config.config import Config
+
+# Get config values from the Config class
+_config = Config()
+CHROMA_DB_PATH = _config.CHROMA_DB_PATH
+OPENAI_API_KEY = _config.OPENAI_API_KEY
+EMBEDDING_MODEL = _config.EMBEDDING_MODEL
+DEFAULT_MODEL = _config.DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -431,7 +433,7 @@ Summary:"""
             "title": title,
             "source": source,
             "category": category,
-            "tags": tags or [],
+            "tags": ",".join(tags) if tags else "",
             "inserted_at": datetime.now().isoformat(),
             "content_length": len(content)
         }
@@ -471,7 +473,7 @@ Summary:"""
             "title": title,
             "source": source,
             "category": category,
-            "tags": tags or [],
+            "tags": ",".join(tags) if tags else "",
             "inserted_at": datetime.now().isoformat()
         }
         

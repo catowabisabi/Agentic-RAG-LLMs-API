@@ -47,6 +47,7 @@ class BaseAgent(ABC):
         
         self.ws_manager = WebSocketManager()
         self.message_queue: Optional[asyncio.Queue] = None
+        self.message_history: List[AgentMessage] = []
         
         self.status = AgentStatus.IDLE
         self.current_task: Optional[TaskAssignment] = None
@@ -118,6 +119,12 @@ class BaseAgent(ABC):
     
     async def _process_message(self, message: AgentMessage):
         """Process an incoming message"""
+        # Record message in history
+        self.message_history.append(message)
+        # Keep only last 100 messages
+        if len(self.message_history) > 100:
+            self.message_history = self.message_history[-100:]
+        
         handler = self._message_handlers.get(message.type)
         
         if handler:

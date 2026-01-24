@@ -66,7 +66,7 @@ async def list_agents():
     registry = AgentRegistry()
     agents = []
     
-    for name, agent in registry.agents.items():
+    for name, agent in registry._agents.items():
         agents.append(AgentResponse(
             name=name,
             role=agent.agent_role,
@@ -84,12 +84,32 @@ async def get_system_health():
     registry = AgentRegistry()
     health = registry.get_system_health()
     
+    # Count agents by status
+    running_count = 0
+    idle_count = 0
+    busy_count = 0
+    agents_info = {}
+    
+    for name, agent in registry._agents.items():
+        if agent.is_running:
+            running_count += 1
+        if agent.status.value == "idle":
+            idle_count += 1
+        elif agent.status.value == "busy" or agent.status.value == "processing":
+            busy_count += 1
+        
+        agents_info[name] = {
+            "status": agent.status.value,
+            "is_running": agent.is_running,
+            "role": agent.agent_role
+        }
+    
     return SystemHealthResponse(
         total_agents=health["total_agents"],
-        running_agents=health["running_agents"],
-        idle_agents=health["idle_agents"],
-        busy_agents=health["busy_agents"],
-        agents=health["agents"]
+        running_agents=running_count,
+        idle_agents=idle_count,
+        busy_agents=busy_count,
+        agents=agents_info
     )
 
 
@@ -151,9 +171,8 @@ async def send_task(request: TaskRequest, background_tasks: BackgroundTasks):
     task = TaskAssignment(
         task_id=f"api-{datetime.now().timestamp()}",
         task_type=request.task_type,
-        input_data=request.input_data,
-        context=request.context,
-        priority=request.priority
+        description=f"API task: {request.task_type}",
+        input_data=request.input_data
     )
     
     # Create message
@@ -272,7 +291,7 @@ async def start_all_agents():
     return {
         "success": True,
         "message": "All agents started",
-        "agents": list(registry.agents.keys())
+        "agents": list(registry._agents.keys())
     }
 
 
@@ -285,4 +304,62 @@ async def stop_all_agents():
     return {
         "success": True,
         "message": "All agents stopped"
+    }
+
+
+@router.get("/{agent_name}/activity")
+async def get_agent_activity(agent_name: str, limit: int = 50):
+    """Get agent message history and activity for demo/debugging"""
+    registry = AgentRegistry()
+    agent = registry.get_agent(agent_name)
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_name} not found")
+    
+    # Get message history
+    history = []
+    for msg in agent.message_history[-limit:]:
+        history.append({
+            "type": msg.type.value if hasattr(msg.type, 'value') else str(msg.type),
+            "source": msg.source_agent,
+            "target": msg.target_agent,
+            "content": msg.content,
+            "timestamp": msg.timestamp,
+            "priority": msg.priority
+        })
+    
+    return {
+        "agent": agent_name,
+        "status": agent.status.value if hasattr(agent.status, 'value') else str(agent.status),
+        "is_running": agent.is_running,
+        "current_task": agent.current_task.model_dump() if agent.current_task else None,
+        "message_count": len(agent.message_history),
+        "activity": history
+    }
+
+
+@router.get("/activity/all")
+async def get_all_agents_activity(limit: int = 20):
+    """Get activity from all agents for demo dashboard"""
+    registry = AgentRegistry()
+    all_activity = []
+    
+    for name, agent in registry._agents.items():
+        for msg in agent.message_history[-limit:]:
+            all_activity.append({
+                "agent": name,
+                "type": msg.type.value if hasattr(msg.type, 'value') else str(msg.type),
+                "source": msg.source_agent,
+                "target": msg.target_agent,
+                "content": msg.content,
+                "timestamp": msg.timestamp,
+                "priority": msg.priority
+            })
+    
+    # Sort by timestamp
+    all_activity.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    return {
+        "total_messages": len(all_activity),
+        "activity": all_activity[:limit * 2]  # Return up to 2x limit
     }

@@ -442,3 +442,83 @@ async def upload_to_database(
     except Exception as e:
         logger.error(f"Upload to database error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Document Management ==============
+
+@router.get("/databases/{db_name}/documents")
+async def list_database_documents(db_name: str, limit: int = 100, offset: int = 0):
+    """List all documents in a database with their content preview"""
+    try:
+        info = vectordb_manager.get_database_info(db_name)
+        if not info:
+            raise HTTPException(status_code=404, detail=f"Database '{db_name}' not found")
+        
+        # Get documents from the collection
+        collection = vectordb_manager._get_collection(db_name)
+        if not collection:
+            return {
+                "success": True,
+                "database": db_name,
+                "documents": [],
+                "total": 0
+            }
+        
+        # Get all documents
+        result = collection.get(
+            limit=limit,
+            offset=offset,
+            include=["documents", "metadatas"]
+        )
+        
+        documents = []
+        if result and result.get("ids"):
+            for i, doc_id in enumerate(result["ids"]):
+                doc = {
+                    "id": doc_id,
+                    "content": result["documents"][i] if result.get("documents") else "",
+                    "metadata": result["metadatas"][i] if result.get("metadatas") else {}
+                }
+                # Add preview
+                content = doc["content"] or ""
+                doc["preview"] = content[:200] + "..." if len(content) > 200 else content
+                documents.append(doc)
+        
+        return {
+            "success": True,
+            "database": db_name,
+            "documents": documents,
+            "total": len(documents),
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List documents error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/databases/{db_name}/documents/{doc_id}")
+async def delete_document(db_name: str, doc_id: str):
+    """Delete a specific document from a database"""
+    try:
+        collection = vectordb_manager._get_collection(db_name)
+        if not collection:
+            raise HTTPException(status_code=404, detail=f"Database '{db_name}' not found")
+        
+        # Delete the document
+        collection.delete(ids=[doc_id])
+        
+        return {
+            "success": True,
+            "deleted": doc_id,
+            "database": db_name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete document error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
