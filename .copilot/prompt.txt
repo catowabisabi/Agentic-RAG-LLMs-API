@@ -1,21 +1,110 @@
 使用繁體中文回應
+你透過 CLI 與 Terminal 互動，負責啟動、監控及管理一個 Agentic RAG LLM API 系統。
 
-非常重要: NodeBB-Plugin-Life-Services-Folder 是安裝在NodeBB 的plugin, 用作控制life services
+呼叫項目使用完整Path, 當發現：
+任務未能運行
+需要人工處理
+有風險或不確定事項
+必須建立 TODO 記錄
 
+TODO 檔案位置：
+D:\codebase\Agentic-RAG-LLMs-API\Todo\todo_YYYY_MM_DD.txt
 
-呼叫項目使用完整Path
-Flutter App Root為: C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\
-如果有必要建立TODO list, 使用folder: C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\Todo\todo_YYYY_MM_DD.txt
-NodeBB Server在本在, 呼叫Flutter APP 之前, 使用C:\Users\Chris\Desktop\app\CICD\HK-Garden-App\HK_Garden_App\cors-proxy.js
-NodeBB 有官方api doc, 使用api-reference\read.yaml 和api-reference\write.yaml 所說明的endpoint去建立介面
-重要的結構和指示, 可以使用memory.json作為記憶
-用戶分為訪客用戶, 普通用戶, 管理員和Owner 
-訪客可以讀取post, 和回應, 普通用戶可以like, unlike, delike, post, 和回應, 管理員可以delete post, 和ban user, owner有更大的權力, 包括加減分類
-
-
-如果發現有port位置使用佔用而不能開Flutter, kill application
-port 4567 是nodebb Server
-port 3001 是 cros server
-
+TODO 應包含：
+時間
+問題描述
+影響模組
+建議行動
 
 
+長期記憶（重要結構與指示）
+
+對於以下內容，必須寫入 memory.json 作為系統記憶：
+專案結構變更
+重要啟動方式
+Port 配置
+角色權限規則
+長期有效的操作指引
+
+memory.json 為：
+穩定知識來源
+重啟後仍需遵守的規則
+
+
+Application 啟動前檢查流程（使用 tmux）
+在啟動任何 Application（API / UI / Testing）之前，必須以 tmux window / pane 為唯一可信識別，而非依賴 OS terminal 或視覺 window。
+🪟 tmux Window 規範（固定命名，不可亂改）
+
+tmux session 內，必須使用以下 固定 window 名稱：
+testing_terminal
+用途：API testing / curl / debug
+
+api_terminal
+用途：FastAPI / Backend API Server（Port 1130）
+
+ui_terminal
+用途：Next.js UI Server（Port 1131）
+
+👉 不得使用隨機或臨時 window 名
+
+🧠 啟動邏輯（以 tmux ID 為核心）
+啟動流程如下：
+檢查對應 tmux window / pane 是否存在
+
+若存在：
+視為該 Application 可能已在運行
+必須先檢查該 pane 的最近輸出
+
+若不存在：
+建立對應 window，再啟動 Application
+透過 tmux capture-pane
+讀取對應 pane 最近輸出（建議 50 行）
+
+用於判斷：
+是否已成功啟動
+是否因 Port 佔用而失敗
+
+🔌 Port 衝突處理（不直接用 OS process）
+Port 定義：
+1130 → API Server（api_terminal）
+1131 → UI Server（ui_terminal）
+
+若啟動失敗，且輸出顯示：
+address already in use
+port is already allocated
+
+類似 Port 佔用錯誤
+👉 優先假設為「同一 tmux window / pane 中的殘留 process」
+💥 強制處理方式（tmux 優先）
+
+處理順序必須為：
+定位對應 tmux window / pane
+
+例如：
+API → api_terminal
+UI → ui_terminal
+向該 pane 發送中斷指令
+
+優先嘗試：
+Ctrl+C
+
+再次檢查輸出狀態
+確認 pane 已停止輸出
+再重新啟動 Application
+
+👉 只有在 tmux pane 無法控制或非本 session 啟動時
+👉 才建議使用 OS-level Port / process 檢查（作為 fallback）
+
+✅ 啟動成功判斷標準
+對應 tmux pane：
+無 Port error
+出現正常啟動 log
+Port 可被對應服務存取
+tmux window / pane ID 保持不變
+
+⚠️ 行為原則補充
+tmux window / pane = Application 身份
+Port 只是輔助訊號，不是主識別
+不依賴視覺 terminal
+不假設 OS process 狀態
+一切以 tmux capture-pane 結果為準

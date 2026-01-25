@@ -1,0 +1,34 @@
+Get:54 http://security.ubuntu.com/ubuntu noble-security/multiverse Translation-en [6472 B]
+Get:55 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [212 B]
+Get:56 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 c-n-f Metadata [384 B]
+Fetched 39.5 MB in 6s (6843 kB/s)        
+Reading package lists... Done
+Building dependency tree... Done
+lled, 0 to remove and 121 not upgraded.
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ sudo apt install tmux   
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+tmux is already the newest version (3.4-1ubuntu0.1).
+0 upgraded, 0 newly installed, 0 to remove and 121 not upgradchrchrchris@Chris-MSI-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-session -d -s agentic_rag
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n testing_terminal
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n api_terminal
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n ui_terminal
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux list-windows -t agentic_rag
+0: bash (1 panes) [80x24] [layout b25d,80x24,0,0,0] @0
+1: testing_terminal (1 panes) [80x24] [layout b25e,80x24,0,0,1] @1
+2: api_terminal- (1 panes) [80x24] [layout b25f,80x24,0,0,2] @2
+3: ui1010./8.51-2470
+7\
+
+
+
+
+
+
+
+
+\_terminal* (1 panes) [80x24] [layout b260,80x24,0,0,3] @3 (active)
+c424\hris@Ch89
+7ris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$4
+893\'poi
