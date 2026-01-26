@@ -5,6 +5,8 @@ Model Context Protocol server implementation:
 - Provides tools for agent interaction
 - Exposes resources for RAG
 - Handles prompts for agent system
+- File/Database/Communication/System control
+- Medical RAG and Accounting Regulations
 """
 
 import asyncio
@@ -94,6 +96,21 @@ from agents.shared_services.message_protocol import (
 from tools.retriever import DocumentRetriever
 from config.config import Config
 
+# Import new providers
+from mcp.providers import (
+    FileControlProvider,
+    DatabaseControlProvider,
+    CommunicationProvider,
+    SystemCommandProvider
+)
+# Import new services
+from mcp.services import MedicalRAGService
+from mcp.services.accounting_regulations_data import (
+    get_all_regulations,
+    get_regulations_by_jurisdiction,
+    ingest_regulations_to_rag
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,6 +122,8 @@ class MCPAgentServer:
     - Tools for querying and managing agents
     - Resources for document retrieval
     - Prompts for common operations
+    - File/Database/Communication/System control
+    - Medical RAG and Accounting Regulations
     """
     
     def __init__(self):
@@ -112,6 +131,13 @@ class MCPAgentServer:
         self.config = Config()
         self.registry = None
         self.ws_manager = None
+        
+        # Initialize new providers
+        self.file_provider = FileControlProvider()
+        self.db_provider = DatabaseControlProvider()
+        self.comm_provider = CommunicationProvider()
+        self.system_provider = SystemCommandProvider()
+        self.medical_service = MedicalRAGService()
         
         self._setup_handlers()
     
@@ -352,6 +378,234 @@ class MCPAgentServer:
                         },
                         "required": ["expression"]
                     }
+                ),
+                # ============================================
+                # FILE CONTROL TOOLS
+                # ============================================
+                Tool(
+                    name="read_file",
+                    description="Read content from TXT, JSON, CSV, Excel, or PDF files",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string", "description": "Path to the file"},
+                            "file_type": {"type": "string", "enum": ["txt", "json", "csv", "excel", "pdf"], "description": "Type of file"},
+                            "sheet_name": {"type": "string", "description": "Sheet name for Excel files (optional)"}
+                        },
+                        "required": ["file_path", "file_type"]
+                    }
+                ),
+                Tool(
+                    name="write_file",
+                    description="Write content to TXT, JSON, CSV, or Excel files",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string", "description": "Path to the file"},
+                            "file_type": {"type": "string", "enum": ["txt", "json", "csv", "excel"], "description": "Type of file"},
+                            "content": {"type": "string", "description": "Content to write (string or JSON for structured data)"}
+                        },
+                        "required": ["file_path", "file_type", "content"]
+                    }
+                ),
+                Tool(
+                    name="list_files",
+                    description="List files in a directory with optional pattern matching",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "directory": {"type": "string", "description": "Directory path"},
+                            "pattern": {"type": "string", "description": "Glob pattern (e.g., *.txt)"}
+                        },
+                        "required": ["directory"]
+                    }
+                ),
+                # ============================================
+                # DATABASE CONTROL TOOLS
+                # ============================================
+                Tool(
+                    name="query_database",
+                    description="Execute SELECT query on SQLite or PostgreSQL database",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "db_type": {"type": "string", "enum": ["sqlite", "postgres"], "description": "Database type"},
+                            "db_path": {"type": "string", "description": "Path for SQLite or connection string for PostgreSQL"},
+                            "query": {"type": "string", "description": "SQL SELECT query"},
+                            "params": {"type": "array", "description": "Query parameters"}
+                        },
+                        "required": ["db_type", "db_path", "query"]
+                    }
+                ),
+                Tool(
+                    name="execute_database",
+                    description="Execute INSERT/UPDATE/DELETE on database",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "db_type": {"type": "string", "enum": ["sqlite", "postgres"]},
+                            "db_path": {"type": "string"},
+                            "query": {"type": "string"},
+                            "params": {"type": "array"}
+                        },
+                        "required": ["db_type", "db_path", "query"]
+                    }
+                ),
+                Tool(
+                    name="list_database_tables",
+                    description="List all tables in a database",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "db_type": {"type": "string", "enum": ["sqlite", "postgres"]},
+                            "db_path": {"type": "string"}
+                        },
+                        "required": ["db_type", "db_path"]
+                    }
+                ),
+                # ============================================
+                # COMMUNICATION TOOLS
+                # ============================================
+                Tool(
+                    name="send_email",
+                    description="Send email via Gmail",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "to": {"type": "string", "description": "Recipient email"},
+                            "subject": {"type": "string"},
+                            "body": {"type": "string"},
+                            "require_confirmation": {"type": "boolean", "default": True}
+                        },
+                        "required": ["to", "subject", "body"]
+                    }
+                ),
+                Tool(
+                    name="send_telegram",
+                    description="Send message via Telegram",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "chat_id": {"type": "string"},
+                            "message": {"type": "string"},
+                            "require_confirmation": {"type": "boolean", "default": True}
+                        },
+                        "required": ["chat_id", "message"]
+                    }
+                ),
+                Tool(
+                    name="send_whatsapp",
+                    description="Send WhatsApp message via Twilio",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "to": {"type": "string", "description": "Phone number with country code"},
+                            "message": {"type": "string"},
+                            "require_confirmation": {"type": "boolean", "default": True}
+                        },
+                        "required": ["to", "message"]
+                    }
+                ),
+                # ============================================
+                # SYSTEM COMMAND TOOLS
+                # ============================================
+                Tool(
+                    name="execute_command",
+                    description="Execute shell command (with security controls)",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "args": {"type": "array", "items": {"type": "string"}},
+                            "working_dir": {"type": "string"},
+                            "require_confirmation": {"type": "boolean", "default": True}
+                        },
+                        "required": ["command"]
+                    }
+                ),
+                Tool(
+                    name="run_python_code",
+                    description="Execute Python code snippet safely",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "timeout": {"type": "integer", "default": 30}
+                        },
+                        "required": ["code"]
+                    }
+                ),
+                Tool(
+                    name="get_system_info",
+                    description="Get system information (CPU, memory, disk)",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
+                ),
+                # ============================================
+                # MEDICAL RAG TOOLS
+                # ============================================
+                Tool(
+                    name="search_pubmed",
+                    description="Search PubMed for medical literature",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "max_results": {"type": "integer", "default": 10}
+                        },
+                        "required": ["query"]
+                    }
+                ),
+                Tool(
+                    name="search_clinical_trials",
+                    description="Search ClinicalTrials.gov for studies",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "condition": {"type": "string"},
+                            "intervention": {"type": "string"},
+                            "status": {"type": "string", "enum": ["recruiting", "completed", "active"]}
+                        },
+                        "required": ["condition"]
+                    }
+                ),
+                Tool(
+                    name="lookup_drug",
+                    description="Look up drug information from OpenFDA",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "drug_name": {"type": "string"}
+                        },
+                        "required": ["drug_name"]
+                    }
+                ),
+                # ============================================
+                # ACCOUNTING REGULATIONS TOOLS
+                # ============================================
+                Tool(
+                    name="get_accounting_regulations",
+                    description="Get accounting regulations for Hong Kong, China, or Canada",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "jurisdiction": {"type": "string", "enum": ["Hong Kong", "China", "Canada", "all"]}
+                        },
+                        "required": ["jurisdiction"]
+                    }
+                ),
+                Tool(
+                    name="ingest_accounting_to_rag",
+                    description="Ingest accounting regulations into RAG system",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "jurisdictions": {"type": "array", "items": {"type": "string"}},
+                            "collection_name": {"type": "string", "default": "accounting"}
+                        }
+                    }
                 )
             ]
         
@@ -359,6 +613,7 @@ class MCPAgentServer:
         async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             """Handle tool calls"""
             try:
+                # Original agent tools
                 if name == "query_agents":
                     result = await self._query_agents(arguments)
                 elif name == "list_agents":
@@ -381,6 +636,53 @@ class MCPAgentServer:
                     result = await self._translate(arguments)
                 elif name == "calculate":
                     result = await self._calculate(arguments)
+                
+                # File control tools
+                elif name == "read_file":
+                    result = await self._handle_file_read(arguments)
+                elif name == "write_file":
+                    result = await self._handle_file_write(arguments)
+                elif name == "list_files":
+                    result = await self._handle_list_files(arguments)
+                
+                # Database control tools
+                elif name == "query_database":
+                    result = await self._handle_db_query(arguments)
+                elif name == "execute_database":
+                    result = await self._handle_db_execute(arguments)
+                elif name == "list_database_tables":
+                    result = await self._handle_list_tables(arguments)
+                
+                # Communication tools
+                elif name == "send_email":
+                    result = await self._handle_send_email(arguments)
+                elif name == "send_telegram":
+                    result = await self._handle_send_telegram(arguments)
+                elif name == "send_whatsapp":
+                    result = await self._handle_send_whatsapp(arguments)
+                
+                # System command tools
+                elif name == "execute_command":
+                    result = await self._handle_execute_command(arguments)
+                elif name == "run_python_code":
+                    result = await self._handle_run_python(arguments)
+                elif name == "get_system_info":
+                    result = await self._handle_system_info(arguments)
+                
+                # Medical RAG tools
+                elif name == "search_pubmed":
+                    result = await self._handle_search_pubmed(arguments)
+                elif name == "search_clinical_trials":
+                    result = await self._handle_search_trials(arguments)
+                elif name == "lookup_drug":
+                    result = await self._handle_lookup_drug(arguments)
+                
+                # Accounting regulations tools
+                elif name == "get_accounting_regulations":
+                    result = await self._handle_get_regulations(arguments)
+                elif name == "ingest_accounting_to_rag":
+                    result = await self._handle_ingest_regulations(arguments)
+                
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
@@ -738,6 +1040,308 @@ class MCPAgentServer:
             "task_id": task.task_id,
             "message": "Calculation task submitted"
         }
+    
+    # ============================================
+    # FILE CONTROL HANDLERS
+    # ============================================
+    
+    async def _handle_file_read(self, args: dict) -> dict:
+        """Handle file read operations"""
+        file_path = args.get("file_path", "")
+        file_type = args.get("file_type", "txt")
+        sheet_name = args.get("sheet_name")
+        
+        try:
+            if file_type == "txt":
+                result = self.file_provider.read_txt(file_path)
+            elif file_type == "json":
+                result = self.file_provider.read_json(file_path)
+            elif file_type == "csv":
+                result = self.file_provider.read_csv(file_path)
+            elif file_type == "excel":
+                result = self.file_provider.read_excel(file_path, sheet_name)
+            elif file_type == "pdf":
+                result = self.file_provider.read_pdf(file_path)
+            else:
+                return {"error": f"Unsupported file type: {file_type}"}
+            
+            return {"success": True, "content": result}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_file_write(self, args: dict) -> dict:
+        """Handle file write operations"""
+        file_path = args.get("file_path", "")
+        file_type = args.get("file_type", "txt")
+        content = args.get("content", "")
+        
+        try:
+            import json as json_module
+            
+            if file_type == "txt":
+                result = self.file_provider.write_txt(file_path, content)
+            elif file_type == "json":
+                data = json_module.loads(content) if isinstance(content, str) else content
+                result = self.file_provider.write_json(file_path, data)
+            elif file_type == "csv":
+                data = json_module.loads(content) if isinstance(content, str) else content
+                result = self.file_provider.write_csv(file_path, data)
+            elif file_type == "excel":
+                data = json_module.loads(content) if isinstance(content, str) else content
+                result = self.file_provider.write_excel(file_path, data)
+            else:
+                return {"error": f"Unsupported file type: {file_type}"}
+            
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_list_files(self, args: dict) -> dict:
+        """Handle list files operation"""
+        directory = args.get("directory", ".")
+        pattern = args.get("pattern", "*")
+        
+        try:
+            result = self.file_provider.list_files(directory, pattern)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # ============================================
+    # DATABASE CONTROL HANDLERS
+    # ============================================
+    
+    async def _handle_db_query(self, args: dict) -> dict:
+        """Handle database query"""
+        db_type = args.get("db_type", "sqlite")
+        db_path = args.get("db_path", "")
+        query = args.get("query", "")
+        params = args.get("params", [])
+        
+        try:
+            if db_type == "sqlite":
+                result = self.db_provider.query_sqlite(db_path, query, tuple(params) if params else None)
+            elif db_type == "postgres":
+                result = await self.db_provider.query_postgres(db_path, query, tuple(params) if params else None)
+            else:
+                return {"error": f"Unsupported database type: {db_type}"}
+            
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_db_execute(self, args: dict) -> dict:
+        """Handle database execute"""
+        db_type = args.get("db_type", "sqlite")
+        db_path = args.get("db_path", "")
+        query = args.get("query", "")
+        params = args.get("params", [])
+        
+        try:
+            if db_type == "sqlite":
+                result = self.db_provider.execute_sqlite(db_path, query, tuple(params) if params else None)
+            else:
+                return {"error": "Execute only supported for SQLite currently"}
+            
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_list_tables(self, args: dict) -> dict:
+        """Handle list tables"""
+        db_type = args.get("db_type", "sqlite")
+        db_path = args.get("db_path", "")
+        
+        try:
+            result = self.db_provider.list_tables(db_path, db_type)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # ============================================
+    # COMMUNICATION HANDLERS
+    # ============================================
+    
+    async def _handle_send_email(self, args: dict) -> dict:
+        """Handle send email"""
+        to = args.get("to", "")
+        subject = args.get("subject", "")
+        body = args.get("body", "")
+        require_confirmation = args.get("require_confirmation", True)
+        
+        try:
+            result = await self.comm_provider.send_email(
+                to=to,
+                subject=subject,
+                body=body,
+                require_confirmation=require_confirmation
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_send_telegram(self, args: dict) -> dict:
+        """Handle send telegram"""
+        chat_id = args.get("chat_id", "")
+        message = args.get("message", "")
+        require_confirmation = args.get("require_confirmation", True)
+        
+        try:
+            result = await self.comm_provider.send_telegram(
+                chat_id=chat_id,
+                message=message,
+                require_confirmation=require_confirmation
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_send_whatsapp(self, args: dict) -> dict:
+        """Handle send whatsapp"""
+        to = args.get("to", "")
+        message = args.get("message", "")
+        require_confirmation = args.get("require_confirmation", True)
+        
+        try:
+            result = await self.comm_provider.send_whatsapp(
+                to=to,
+                message=message,
+                require_confirmation=require_confirmation
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # ============================================
+    # SYSTEM COMMAND HANDLERS
+    # ============================================
+    
+    async def _handle_execute_command(self, args: dict) -> dict:
+        """Handle execute command"""
+        command = args.get("command", "")
+        cmd_args = args.get("args", [])
+        working_dir = args.get("working_dir")
+        require_confirmation = args.get("require_confirmation", True)
+        
+        try:
+            result = await self.system_provider.execute_command(
+                command=command,
+                args=cmd_args,
+                working_dir=working_dir,
+                require_confirmation=require_confirmation
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_run_python(self, args: dict) -> dict:
+        """Handle run python code"""
+        code = args.get("code", "")
+        timeout = args.get("timeout", 30)
+        
+        try:
+            result = await self.system_provider.run_python(code, timeout=timeout)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_system_info(self, args: dict) -> dict:
+        """Handle get system info"""
+        try:
+            result = self.system_provider.get_system_info()
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # ============================================
+    # MEDICAL RAG HANDLERS
+    # ============================================
+    
+    async def _handle_search_pubmed(self, args: dict) -> dict:
+        """Handle search pubmed"""
+        query = args.get("query", "")
+        max_results = args.get("max_results", 10)
+        
+        try:
+            result = await self.medical_service.search_pubmed(query, max_results)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_search_trials(self, args: dict) -> dict:
+        """Handle search clinical trials"""
+        condition = args.get("condition", "")
+        intervention = args.get("intervention")
+        status = args.get("status")
+        
+        try:
+            result = await self.medical_service.search_clinical_trials(
+                condition=condition,
+                intervention=intervention,
+                status=status
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_lookup_drug(self, args: dict) -> dict:
+        """Handle lookup drug"""
+        drug_name = args.get("drug_name", "")
+        
+        try:
+            result = await self.medical_service.lookup_drug(drug_name)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    # ============================================
+    # ACCOUNTING REGULATIONS HANDLERS
+    # ============================================
+    
+    async def _handle_get_regulations(self, args: dict) -> dict:
+        """Handle get accounting regulations"""
+        jurisdiction = args.get("jurisdiction", "all")
+        
+        try:
+            if jurisdiction == "all":
+                regulations = get_all_regulations()
+            else:
+                regulations = get_regulations_by_jurisdiction(jurisdiction)
+            
+            # Return summary instead of full content
+            summaries = []
+            for reg in regulations:
+                summaries.append({
+                    "id": reg["id"],
+                    "jurisdiction": reg["jurisdiction"],
+                    "title": reg["title"],
+                    "title_local": reg.get("title_local", ""),
+                    "category": reg["category"],
+                    "authority": reg["authority"],
+                    "effective_date": reg["effective_date"]
+                })
+            
+            return {
+                "success": True,
+                "count": len(summaries),
+                "regulations": summaries
+            }
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def _handle_ingest_regulations(self, args: dict) -> dict:
+        """Handle ingest accounting regulations to RAG"""
+        jurisdictions = args.get("jurisdictions")
+        collection_name = args.get("collection_name", "accounting")
+        
+        try:
+            result = await ingest_regulations_to_rag(
+                collection_name=collection_name,
+                jurisdictions=jurisdictions
+            )
+            return result
+        except Exception as e:
+            return {"error": str(e)}
     
     async def run(self):
         """Run the MCP server"""

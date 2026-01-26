@@ -1,0 +1,24 @@
+# MCP Optional Dependencies
+# Install as needed for specific MCP providers
+
+# File Control Provider
+openpyxl>=3.1.0      # Excel file support
+pypdf>=3.0.0         # PDF reading
+pandas>=2.0.0        # Enhanced CSV/data handling (optional)
+
+# Database Provider
+psycopg2-binary>=2.9.0  # PostgreSQL support
+
+# Communication Provider
+google-auth>=2.0.0                 # Gmail OAuth
+google-auth-oauthlib>=1.0.0        # Gmail OAuth flow
+google-api-python-client>=2.0.0   # Gmail API
+python-telegram-bot>=20.0         # Telegram Bot API
+twilio>=8.0.0                     # WhatsApp via Twilio
+
+# Medical RAG Service
+biopython>=1.80       # PubMed/NCBI access
+httpx>=0.24.0         # Async HTTP client (already in main deps)
+
+# To install all:
+# pip install openpyxl pypdf pandas psycopg2-binary google-auth google-auth-oauthlib google-api-python-client python-telegram-bot twilio biopython

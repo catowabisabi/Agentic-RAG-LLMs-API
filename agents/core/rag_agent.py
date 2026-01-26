@@ -186,9 +186,32 @@ Respond with your decision."""
         
         docs = await self._perform_retrieval([query], top_k)
         
+        # Build context from retrieved documents
+        context_parts = []
+        sources = []
+        
+        for doc in docs:
+            content = doc.get("content", "")
+            metadata = doc.get("metadata", {})
+            
+            context_parts.append(content)
+            sources.append({
+                "content": content[:500],  # Truncate for sources
+                "title": metadata.get("title", "Unknown"),
+                "source": metadata.get("source", "RAG Database"),
+                "doc_id": metadata.get("doc_id", ""),
+                "score": doc.get("similarity_score", 0)
+            })
+        
+        context = "\n\n---\n\n".join(context_parts) if context_parts else ""
+        
+        logger.info(f"[RAG] Retrieved {len(docs)} documents for query: {query[:50]}...")
+        
         return {
             "query": query,
-            "documents": docs,
+            "context": context,  # Combined context for thinking agent
+            "sources": sources,  # Source metadata for response
+            "documents": docs,   # Raw documents
             "count": len(docs)
         }
     
