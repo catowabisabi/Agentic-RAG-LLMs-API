@@ -78,7 +78,7 @@ class DocumentRetriever:
     
     def add_documents(self, documents: List[str], metadatas: Optional[List[Dict]] = None) -> bool:
         """Add documents to the vector store"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             print("Vector store not initialized")
             return False
         
@@ -125,7 +125,7 @@ class DocumentRetriever:
     
     def add_document(self, content: str, metadata: Optional[Dict] = None) -> Optional[str]:
         """Add a single document to the vector store and return its ID"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             print("Vector store not initialized")
             return None
         
@@ -170,7 +170,7 @@ class DocumentRetriever:
     
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Retrieve relevant documents for a query"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             print("Vector store not initialized")
             return []
         
@@ -198,7 +198,7 @@ class DocumentRetriever:
     
     def get_collection_stats(self) -> Dict[str, Any]:
         """Get statistics about the document collection"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             return {"error": "Vector store not initialized"}
         
         try:
@@ -214,7 +214,7 @@ class DocumentRetriever:
     
     def get_collection_info(self) -> Dict[str, Any]:
         """Get detailed information about the collection"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             return {"error": "Vector store not initialized"}
         
         try:
@@ -258,7 +258,7 @@ class AdvancedRetriever(DocumentRetriever):
     
     def retrieve_with_filter(self, query: str, filters: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
         """Retrieve documents with metadata filters"""
-        if not self.vectorstore:
+        if self.vectorstore is None:
             return []
         
         try:
