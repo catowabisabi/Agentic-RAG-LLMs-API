@@ -50,7 +50,7 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="p-8">
+    <div className="p-8 h-full overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>

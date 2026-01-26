@@ -4,9 +4,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Users, RefreshCw, Play, Pause, Send, AlertTriangle,
   CheckCircle, Clock, Zap, Activity, Eye, ChevronDown, ChevronUp,
-  MessageSquare, Brain, ArrowRight
+  MessageSquare, Brain, ArrowRight, Wifi, WifiOff
 } from 'lucide-react';
-import { agentAPI } from '../lib/api';
+import { agentAPI, createWebSocket } from '../lib/api';
 
 interface Agent {
   name: string;
@@ -43,9 +43,99 @@ export default function AgentsPage() {
   const [expandedActivities, setExpandedActivities] = useState<Set<number>>(new Set());
   const activityRef = useRef<HTMLDivElement>(null);
   
+  // WebSocket state
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  
   // Agent detail
   const [agentDetail, setAgentDetail] = useState<any>(null);
   const [showAgentDetail, setShowAgentDetail] = useState(false);
+
+  // Connect to WebSocket for real-time activity
+  useEffect(() => {
+    const connectWs = () => {
+      try {
+        const ws = createWebSocket('/ws');
+        wsRef.current = ws;
+        
+        ws.onopen = () => {
+          console.log('[AgentsPage] WebSocket connected');
+          setWsConnected(true);
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            // Handle activity messages
+            if (data.message_type === 'activity' || data.type?.includes('agent') || data.type?.includes('task') || data.type === 'thinking') {
+              const newActivity: ActivityItem = {
+                agent: data.agent || data.source_agent || 'unknown',
+                type: data.type,
+                source: data.source || data.source_agent || 'system',
+                target: data.target || data.target_agent || 'system',
+                content: data.content || data,
+                timestamp: data.timestamp || new Date().toISOString(),
+                priority: data.priority || 1
+              };
+              setActivity(prev => {
+                // Dedupe
+                const isDupe = prev.some(p => 
+                  p.timestamp === newActivity.timestamp && 
+                  p.type === newActivity.type && 
+                  p.agent === newActivity.agent
+                );
+                if (isDupe) return prev;
+                return [newActivity, ...prev].slice(0, 50);
+              });
+              
+              // Update agent status based on activity
+              const agentName = data.agent || data.source;
+              if (agentName) {
+                setAgents(prev => prev.map(agent => {
+                  if (agent.name === agentName) {
+                    let newStatus = agent.status;
+                    if (data.type === 'agent_started' || data.type === 'task_assigned' || data.type === 'thinking') {
+                      newStatus = 'busy';
+                    } else if (data.type === 'agent_completed') {
+                      newStatus = 'idle';
+                    } else if (data.type === 'agent_error') {
+                      newStatus = 'error';
+                    }
+                    return { ...agent, status: newStatus };
+                  }
+                  return agent;
+                }));
+              }
+            }
+          } catch (e) {
+            console.error('[AgentsPage] Parse error:', e);
+          }
+        };
+        
+        ws.onclose = () => {
+          console.log('[AgentsPage] WebSocket disconnected');
+          setWsConnected(false);
+          // Reconnect after delay
+          setTimeout(connectWs, 3000);
+        };
+        
+        ws.onerror = (err) => {
+          console.error('[AgentsPage] WebSocket error:', err);
+        };
+      } catch (e) {
+        console.error('[AgentsPage] Failed to connect:', e);
+        setTimeout(connectWs, 3000);
+      }
+    };
+    
+    connectWs();
+    
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   const fetchAgents = async () => {
     setLoading(true);
@@ -62,7 +152,16 @@ export default function AgentsPage() {
     setLoadingActivity(true);
     try {
       const response = await agentAPI.getAllActivity(30);
-      setActivity(response.data.activity || []);
+      const apiActivity = response.data.activity || [];
+      if (Array.isArray(apiActivity) && apiActivity.length > 0) {
+        setActivity(prev => {
+          const combined = [...apiActivity, ...prev];
+          const unique = combined.filter((item, index, self) => 
+            index === self.findIndex(t => t.timestamp === item.timestamp && t.type === item.type)
+          );
+          return unique.slice(0, 50);
+        });
+      }
     } catch (err) {
       console.error('Failed to fetch activity:', err);
     }
@@ -153,7 +252,7 @@ export default function AgentsPage() {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-8 h-full overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -161,7 +260,13 @@ export default function AgentsPage() {
             <Users className="w-8 h-8" />
             Agents Dashboard
           </h1>
-          <p className="text-gray-400 mt-1">Manage agents and view Chain of Thought</p>
+          <div className="flex items-center gap-3 mt-1">
+            <p className="text-gray-400">Manage agents and view Chain of Thought</p>
+            <div className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs ${wsConnected ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
+              {wsConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              {wsConnected ? 'Live' : 'Disconnected'}
+            </div>
+          </div>
         </div>
         <div className="flex gap-3">
           <button

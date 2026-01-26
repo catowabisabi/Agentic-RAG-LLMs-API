@@ -98,7 +98,7 @@ export default function RAGPage() {
   const toggleDocExpand = (id: string) => { const n = new Set(expandedDocs); n.has(id) ? n.delete(id) : n.add(id); setExpandedDocs(n); };
 
   return (
-    <div className="p-8">
+    <div className="p-8 h-full overflow-y-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white flex items-center gap-3"><Database className="w-8 h-8" />RAG Vector Database</h1>
         <p className="text-gray-400 mt-1">Manage vector databases, documents, and queries</p>

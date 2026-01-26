@@ -223,6 +223,26 @@ class WebSocketManager:
         for client_id in disconnected:
             await self.disconnect_client(client_id)
     
+    async def broadcast_agent_activity(self, activity: Dict[str, Any]):
+        """
+        Broadcast agent activity for the activity feed.
+        This is used by chat and other components to log agent actions.
+        
+        Args:
+            activity: Dict with keys:
+                - type: "task_assigned", "agent_started", "agent_completed", "thinking", "error"
+                - agent: Agent name
+                - source: Source agent/component
+                - target: Target agent/component  
+                - content: Activity details
+                - timestamp: ISO timestamp
+                - priority: Priority level
+        """
+        # Add activity type for frontend routing
+        activity["message_type"] = "activity"
+        await self.broadcast_to_clients(activity)
+        logger.debug(f"Agent activity broadcast: {activity.get('type')} from {activity.get('agent')}")
+    
     # ============== UI Box Management ==============
     
     async def broadcast_agent_box(

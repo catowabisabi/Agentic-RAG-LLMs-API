@@ -546,7 +546,8 @@ Summary:"""
     async def query_all_databases(
         self,
         query: str,
-        n_results: int = 3
+        n_results: int = 3,
+        skip_empty: bool = True
     ) -> Dict[str, Any]:
         """
         Query across all databases.
@@ -554,19 +555,25 @@ Summary:"""
         Args:
             query: Query string
             n_results: Results per database
+            skip_empty: Skip databases with no documents
             
         Returns:
             Combined results from all databases
         """
         all_results = {}
         
-        for db_name in self._metadata["databases"]:
+        for db_name, db_info in self._metadata["databases"].items():
+            # Skip empty databases if requested
+            if skip_empty and db_info.get("document_count", 0) == 0:
+                continue
+                
             try:
                 result = await self.query(query, db_name, n_results)
                 all_results[db_name] = result["results"]
             except Exception as e:
-                logger.error(f"Error querying {db_name}: {e}")
-                all_results[db_name] = {"error": str(e)}
+                logger.warning(f"Skipping {db_name}: {e}")
+                # Don't include error databases in results
+                continue
         
         return {
             "query": query,
