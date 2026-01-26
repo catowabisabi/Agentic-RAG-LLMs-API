@@ -317,7 +317,8 @@ class BaseAgent(ABC):
     
     async def _report_task_complete(self, result: Any):
         """Report task completion"""
-        message = MessageProtocol.create_agent_completed(self.agent_name, result)
+        task_id = self.current_task.task_id if self.current_task else None
+        message = MessageProtocol.create_agent_completed(self.agent_name, result, task_id)
         
         # Send to manager
         message.target_agent = "manager_agent"

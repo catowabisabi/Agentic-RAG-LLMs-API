@@ -1,34 +1,32 @@
-Get:54 http://security.ubuntu.com/ubuntu noble-security/multiverse Translation-en [6472 B]
-Get:55 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [212 B]
-Get:56 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 c-n-f Metadata [384 B]
-Fetched 39.5 MB in 6s (6843 kB/s)        
-Reading package lists... Done
-Building dependency tree... Done
-lled, 0 to remove and 121 not upgraded.
-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ sudo apt install tmux   
-Reading package lists... Done
-Building dependency tree... Done
-Reading state information... Done
-tmux is already the newest version (3.4-1ubuntu0.1).
-0 upgraded, 0 newly installed, 0 to remove and 121 not upgradchrchrchris@Chris-MSI-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-session -d -s agentic_rag
-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n testing_terminal
-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n api_terminal
-chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux new-window -t agentic_rag -n ui_terminal
+bash (window 0) - 可以保留作為主控制台，用於執行腳本和管理
+重複 windows - 是之前腳本執行多次造成的，清理腳本會移除
+
+Prompt 指令 - 已更新 memory.json，以後：
+使用 window 編號 (0,1,2,3) 而不是名稱
+Window 2 = api_terminal (Port 1130)
+Window 1 = testing_terminal (測試用)
+
+
+標準化指令模式：
+# 啟動服務
+tmux send-keys -t agentic_rag:2 'python3 main.py --ui' Enter
+
+# 檢查狀態  
+tmux capture-pane -t agentic_rag:2 -p | tail -10
+
+# 列出 windows
+tmux list-windows -t agentic_rag
+
+
+這樣就不會再有名稱混亂問題！
+
+
+以下例子:
+(rag) PS D:\codebase\Agentic-RAG-LLMs-API> wsl -d Ubuntu
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ cd /mnt/d/codebase/Agentic-RAG-LLMs-API
 chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$ tmux list-windows -t agentic_rag
 0: bash (1 panes) [80x24] [layout b25d,80x24,0,0,0] @0
 1: testing_terminal (1 panes) [80x24] [layout b25e,80x24,0,0,1] @1
 2: api_terminal- (1 panes) [80x24] [layout b25f,80x24,0,0,2] @2
-3: ui1010./8.51-2470
-7\
-
-
-
-
-
-
-
-
-\_terminal* (1 panes) [80x24] [layout b260,80x24,0,0,3] @3 (active)
-c424\hris@Ch89
-7ris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$4
-893\'poi
+3: ui_terminal* (1 panes) [126x34] [layout bc00,126x34,0,0,3] @3 (active)
+chris@Chris-MSI-GL73:/mnt/d/codebase/Agentic-RAG-LLMs-API$

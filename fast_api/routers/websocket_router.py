@@ -10,6 +10,7 @@ Handles WebSocket connections for real-time agent communication:
 import asyncio
 import logging
 import json
+import uuid
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -49,7 +50,9 @@ async def websocket_endpoint(websocket: WebSocket):
     ws_manager = WebSocketManager()
     registry = AgentRegistry()
     
-    client_id = await ws_manager.connect_client(websocket)
+    # Generate unique client ID
+    client_id = f"client_{uuid.uuid4().hex[:8]}"
+    connection = await ws_manager.connect_client(websocket, client_id)
     
     try:
         # Send initial status
@@ -110,7 +113,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
                 
     except WebSocketDisconnect:
-        ws_manager.disconnect_client(client_id)
+        await ws_manager.disconnect_client(client_id)
         logger.info(f"Client {client_id} disconnected")
 
 

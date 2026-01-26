@@ -1,0 +1,18 @@
+2026-01-25 15:07:XX - API Server 連線問題
+問題描述：
+- API Server 在 Port 1130 成功啟動，所有 13 個 agents 註冊並運行
+- 啟動過程正常，但執行期間被中斷 (KeyboardInterrupt/CancelledError)
+- 使用者回報 http://localhost:1130/ 無法連線
+
+影響模組：
+- FastAPI 主服務 (Port 1130)
+- 全部 13 個 Multi-Agents
+- WebSocket 連接
+- Vector Database 管理
+
+建議行動：
+1. 採用標準化 tmux 管理模式，避免中斷問題
+2. 在 tmux api_terminal 中重新啟動 API Server
+3. 確保 Port 1130 穩定運行，不被其他終端指令中斷
+4. 建立 memory.json 記錄 Port 配置與啟動方式
+5. 驗證 API health endpoint 可正常存取

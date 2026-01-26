@@ -126,13 +126,14 @@ class MessageProtocol:
         )
     
     @staticmethod
-    def create_agent_completed(agent_name: str, result: Any) -> AgentMessage:
+    def create_agent_completed(agent_name: str, result: Any, task_id: str = None) -> AgentMessage:
         return AgentMessage(
             type=MessageType.AGENT_COMPLETED,
             source_agent=agent_name,
             content={
                 "status": AgentStatus.IDLE.value,
-                "result": result
+                "result": result,
+                "task_id": task_id
             }
         )
     

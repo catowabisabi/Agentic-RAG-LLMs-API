@@ -1,0 +1,47 @@
+{
+  "project_structure": {
+    "main_entry": "main.py",
+    "api_port": 1130,
+    "ui_port": 1131,
+    "websocket_endpoint": "ws://localhost:1130/ws"
+  },
+  "startup_instructions": {
+    "api_only": "python main.py --api",
+    "ui_only": "python main.py --ui", 
+    "both_services": "python main.py --ui",
+    "environment": "Windows PowerShell 首選，WSL 缺少依賴套件"
+  },
+  "tmux_management": {
+    "session_name": "agentic_rag",
+    "windows": {
+      "0": "main - 主控制台",
+      "1": "testing_terminal - API 測試/curl/debug", 
+      "2": "api_terminal - FastAPI Backend (Port 1130)",
+      "3": "ui_terminal - Next.js Frontend (Port 1131)"
+    },
+    "commands": {
+      "list_windows": "tmux list-windows -t agentic_rag",
+      "send_to_api": "tmux send-keys -t agentic_rag:2 'command' Enter",
+      "check_api_output": "tmux capture-pane -t agentic_rag:2 -p | tail -10",
+      "start_services": "tmux send-keys -t agentic_rag:2 'python3 main.py --ui' Enter"
+    },
+    "startup_command": "wsl -d Ubuntu -e bash -c 'cd /mnt/d/codebase/Agentic-RAG-LLMs-API && tmux attach-session -t agentic_rag'"
+  },
+  "port_configuration": {
+    "1130": {
+      "service": "FastAPI API Server",
+      "agents_count": 13,
+      "health_check": "http://localhost:1130/agents/health"
+    },
+    "1131": {
+      "service": "Next.js UI Server", 
+      "login": "guest / beourguest",
+      "url": "http://localhost:1131"
+    }
+  },
+  "operational_rules": {
+    "priority": "使用 tmux 為主要管理工具，避免終端中斷問題",
+    "monitoring": "透過 tmux capture-pane 檢查服務狀態",
+    "backup_method": "Windows PowerShell 直接啟動作為備用方案"
+  }
+}
