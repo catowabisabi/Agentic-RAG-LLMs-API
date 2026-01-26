@@ -4,6 +4,7 @@ Chat Router
 REST API endpoints for chat operations:
 - Process queries through the agent system with RAG
 - Uses Manager Agent for coordinated multi-agent processing
+- Supports both sync and async (background) processing modes
 """
 
 import logging
@@ -12,7 +13,7 @@ from datetime import datetime
 import uuid
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,6 +27,7 @@ from agents.shared_services.message_protocol import (
 )
 from config.config import Config
 from services.vectordb_manager import vectordb_manager
+from services.task_manager import task_manager, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, description="Conversation ID")
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context")
     use_rag: bool = Field(default=True, description="Whether to use RAG for context")
+    async_mode: bool = Field(default=False, description="If True, returns task_id immediately and processes in background")
 
 
 class ChatResponse(BaseModel):
@@ -52,6 +55,27 @@ class ChatResponse(BaseModel):
     agents_involved: List[str]
     sources: List[Dict[str, Any]] = []
     timestamp: str
+
+
+class AsyncChatResponse(BaseModel):
+    """Response for async mode - returns immediately with task_id"""
+    task_id: str
+    conversation_id: str
+    status: str = "pending"
+    message: str = "Task submitted. Poll /chat/task/{task_id} for status or wait for WebSocket updates."
+
+
+class TaskStatusResponse(BaseModel):
+    """Task status response"""
+    task_id: str
+    status: str
+    progress: float
+    current_step: str
+    agents_involved: List[str]
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
 
 
 # In-memory conversation storage (use Redis in production)
@@ -111,21 +135,127 @@ async def get_rag_context(query: str) -> tuple[str, List[Dict]]:
         return "", []
 
 
-@router.post("/message", response_model=ChatResponse)
+async def process_chat_task(
+    task_id: str,
+    message: str,
+    conversation_id: str,
+    use_rag: bool,
+    context: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Background task handler for chat processing.
+    This runs independently of the frontend connection.
+    """
+    ws_manager = WebSocketManager()
+    registry = AgentRegistry()
+    
+    # Update progress
+    task_manager.update_progress(task_id, 5, "Initializing...", ["manager_agent"])
+    
+    try:
+        # Get manager agent
+        manager_agent = registry.get_agent("manager_agent")
+        if not manager_agent:
+            raise Exception("Manager agent not available")
+        
+        task_manager.update_progress(task_id, 10, "Manager agent analyzing query...")
+        
+        # Broadcast start via WebSocket
+        await ws_manager.broadcast_agent_activity({
+            "type": "agent_started",
+            "agent": "manager_agent",
+            "task_id": task_id,
+            "content": {"query": message[:100], "conversation_id": conversation_id},
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Create task assignment
+        task = TaskAssignment(
+            task_id=task_id,
+            task_type="user_query",
+            description=message,
+            input_data={
+                "query": message,
+                "conversation_id": conversation_id,
+                "use_rag": use_rag,
+                "context": context
+            },
+            priority=1
+        )
+        
+        task_manager.update_progress(task_id, 20, "Processing with agents...", ["manager_agent", "planning_agent"])
+        
+        # Process through manager (this takes time)
+        start_time = datetime.now()
+        result = await manager_agent.process_task(task)
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        task_manager.update_progress(task_id, 90, "Finalizing response...")
+        
+        # Extract response
+        if isinstance(result, dict):
+            response_text = result.get("response", result.get("content", str(result)))
+            agents_involved = result.get("agents_involved", ["manager_agent"])
+            sources = result.get("sources", [])
+        else:
+            response_text = str(result)
+            agents_involved = ["manager_agent"]
+            sources = []
+        
+        # Store in conversation history
+        if conversation_id in conversations:
+            conversations[conversation_id].append({
+                "id": task_id,
+                "role": "assistant",
+                "content": response_text,
+                "timestamp": datetime.now().isoformat(),
+                "sources": sources,
+                "processing_time": processing_time
+            })
+        
+        # Broadcast completion
+        await ws_manager.broadcast_agent_activity({
+            "type": "task_completed",
+            "task_id": task_id,
+            "agent": "manager_agent",
+            "content": {
+                "response": response_text[:200] + "..." if len(response_text) > 200 else response_text,
+                "sources_count": len(sources),
+                "agents": agents_involved,
+                "processing_time": processing_time
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": sources,
+            "processing_time": processing_time,
+            "conversation_id": conversation_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Background task error: {e}", exc_info=True)
+        await ws_manager.broadcast_agent_activity({
+            "type": "task_error",
+            "task_id": task_id,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        })
+        raise
+
+
+@router.post("/message")
 async def send_message(request: ChatRequest):
     """
     Send a message and get response using TRUE multi-agent coordination.
     
-    Flow:
-    1. User query → Manager Agent
-    2. Manager Agent → Planning Agent (creates execution plan)
-    3. Planning Agent → RAG Agent (if needed) + Thinking Agent
-    4. RAG Agent queries vector databases
-    5. Thinking Agent performs reasoning with RAG context
-    6. Validation Agent checks response quality
-    7. Manager Agent returns final response
+    Modes:
+    - async_mode=False (default): Wait for response (may take 20-60 seconds)
+    - async_mode=True: Return task_id immediately, process in background
     
-    This is a REAL agent workflow with actual waiting time (10-20 seconds typical).
+    For async_mode, poll /chat/task/{task_id} for status, or listen on WebSocket.
     """
     ws_manager = WebSocketManager()
     registry = AgentRegistry()
@@ -145,6 +275,45 @@ async def send_message(request: ChatRequest):
         "timestamp": datetime.now().isoformat()
     })
     
+    # ============================================
+    # ASYNC MODE: Return immediately, process in background
+    # ============================================
+    if request.async_mode:
+        # Create background task
+        task_id = task_manager.create_task(
+            task_type="chat",
+            input_data={
+                "message": request.message,
+                "conversation_id": conversation_id,
+                "use_rag": request.use_rag,
+                "context": request.context
+            }
+        )
+        
+        # Start background processing (fire-and-forget)
+        asyncio.create_task(
+            task_manager.run_task(
+                task_id,
+                process_chat_task,
+                message=request.message,
+                conversation_id=conversation_id,
+                use_rag=request.use_rag,
+                context=request.context
+            )
+        )
+        
+        logger.info(f"[CHAT] Async task {task_id} created for conversation {conversation_id}")
+        
+        return AsyncChatResponse(
+            task_id=task_id,
+            conversation_id=conversation_id,
+            status="pending",
+            message="Task submitted. Poll /chat/task/{task_id} for status or wait for WebSocket updates."
+        )
+    
+    # ============================================
+    # SYNC MODE: Wait for response (original behavior)
+    # ============================================
     try:
         # === STEP 1: Send query to Manager Agent ===
         logger.info(f"[CHAT] Sending query to Manager Agent: {request.message[:50]}...")
@@ -322,4 +491,108 @@ async def clear_conversation(conversation_id: str):
     return {
         "success": True,
         "cleared": conversation_id
+    }
+
+
+# ============================================
+# BACKGROUND TASK ENDPOINTS
+# ============================================
+
+@router.get("/task/{task_id}", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """
+    Get the status of a background chat task.
+    
+    Poll this endpoint to check if your async task has completed.
+    Returns progress, status, and result when done.
+    """
+    task = task_manager.get_task_status(task_id)
+    
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    
+    return TaskStatusResponse(
+        task_id=task["task_id"],
+        status=task["status"],
+        progress=task["progress"],
+        current_step=task["current_step"],
+        agents_involved=task["agents_involved"],
+        result=task.get("result"),
+        error=task.get("error"),
+        created_at=task["created_at"],
+        completed_at=task.get("completed_at")
+    )
+
+
+@router.get("/task/{task_id}/result")
+async def get_task_result(task_id: str):
+    """
+    Get the full result of a completed task.
+    
+    Returns the complete response once the task is done.
+    Returns 202 if still processing.
+    """
+    task = task_manager.get_task_status(task_id)
+    
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    
+    status = task["status"]
+    
+    if status == "pending" or status == "running":
+        return {
+            "status": status,
+            "progress": task["progress"],
+            "current_step": task["current_step"],
+            "message": "Task still processing. Please wait."
+        }
+    
+    if status == "failed":
+        raise HTTPException(status_code=500, detail=task.get("error", "Task failed"))
+    
+    if status == "cancelled":
+        raise HTTPException(status_code=410, detail="Task was cancelled")
+    
+    # Completed
+    return {
+        "status": "completed",
+        "result": task.get("result", {}),
+        "agents_involved": task["agents_involved"],
+        "completed_at": task.get("completed_at")
+    }
+
+
+@router.post("/task/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a running task"""
+    success = task_manager.cancel_task(task_id)
+    
+    if not success:
+        task = task_manager.get_task_status(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        return {"success": False, "message": "Task is not running or already completed"}
+    
+    return {"success": True, "message": f"Task {task_id} cancellation requested"}
+
+
+@router.get("/tasks")
+async def list_tasks(status: Optional[str] = None, limit: int = 50):
+    """
+    List all background tasks.
+    
+    Optionally filter by status: pending, running, completed, failed, cancelled
+    """
+    task_status = None
+    if status:
+        try:
+            task_status = TaskStatus(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    
+    tasks = task_manager.list_tasks(status=task_status, limit=limit)
+    
+    return {
+        "tasks": tasks,
+        "count": len(tasks)
     }

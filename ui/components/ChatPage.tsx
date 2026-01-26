@@ -36,6 +36,15 @@ interface ChatSession {
 }
 
 const STORAGE_KEY = 'agentic-rag-chat-sessions';
+const PENDING_TASK_KEY = 'agentic-rag-pending-task';
+const POLL_INTERVAL = 2000; // Poll every 2 seconds for async tasks
+
+interface PendingTask {
+  sessionId: string;
+  taskId: string;
+  message: string;
+  startedAt: string;
+}
 
 export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -47,10 +56,13 @@ export default function ChatPage() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
+  const [pendingInfo, setPendingInfo] = useState<string | null>(null);
+  const [useAsyncMode, setUseAsyncMode] = useState(true); // Enable async mode by default
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pendingMessageRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const activeSession = sessions.find(s => s.id === activeSessionId);
   const messages = activeSession?.messages || [];
@@ -118,6 +130,20 @@ export default function ChatPage() {
     };
   }, []);
 
+  // Warn user if leaving page with active request
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (loading) {
+        e.preventDefault();
+        e.returnValue = 'You have a request in progress. Leaving may interrupt it.';
+        return e.returnValue;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [loading]);
+
   // Load from localStorage
   useEffect(() => {
     setIsHydrated(true);
@@ -128,6 +154,93 @@ export default function ChatPage() {
         if (Array.isArray(savedSessions) && savedSessions.length > 0) {
           setSessions(savedSessions);
           setActiveSessionId(savedSessions[0].id);
+          
+          // Check for pending task from previous session
+          const pendingTaskStr = localStorage.getItem(PENDING_TASK_KEY);
+          if (pendingTaskStr) {
+            try {
+              const pendingTask: PendingTask = JSON.parse(pendingTaskStr);
+              const startedAt = new Date(pendingTask.startedAt);
+              const elapsed = (Date.now() - startedAt.getTime()) / 1000;
+              
+              if (elapsed < 300 && pendingTask.taskId) {
+                // Task has a taskId - it's an async task, check its status
+                setPendingInfo(`⏳ Checking previous task status...`);
+                
+                // Check task status in background
+                (async () => {
+                  try {
+                    const statusResponse = await chatAPI.getTaskStatus(pendingTask.taskId);
+                    const status = statusResponse.data;
+                    
+                    if (status.status === 'completed') {
+                      // Get and apply result
+                      const resultResponse = await chatAPI.getTaskResult(pendingTask.taskId);
+                      const result = resultResponse.data.result;
+                      
+                      const assistantMessage: Message = {
+                        id: pendingTask.taskId,
+                        role: 'assistant',
+                        content: result.response || 'Task completed',
+                        timestamp: new Date().toISOString(),
+                        agents_involved: result.agents_involved,
+                        sources: result.sources || [],
+                      };
+                      
+                      setSessions(prev => prev.map(s => {
+                        if (s.id === pendingTask.sessionId) {
+                          // Check if message already added
+                          const exists = s.messages.some(m => m.id === pendingTask.taskId);
+                          if (exists) return s;
+                          return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+                        }
+                        return s;
+                      }));
+                      
+                      setPendingInfo(`✅ Previous task completed! Response added.`);
+                      localStorage.removeItem(PENDING_TASK_KEY);
+                      setTimeout(() => setPendingInfo(null), 3000);
+                      
+                    } else if (status.status === 'running' || status.status === 'pending') {
+                      setPendingInfo(`⏳ Previous task still running: ${status.current_step || 'Processing...'} (${Math.round(status.progress)}%)`);
+                      // Keep polling
+                      // TODO: Could resume polling here
+                      setTimeout(() => {
+                        localStorage.removeItem(PENDING_TASK_KEY);
+                        setPendingInfo(null);
+                      }, 10000);
+                      
+                    } else if (status.status === 'failed') {
+                      setPendingInfo(`❌ Previous task failed: ${status.error}`);
+                      localStorage.removeItem(PENDING_TASK_KEY);
+                      setTimeout(() => setPendingInfo(null), 5000);
+                      
+                    } else {
+                      localStorage.removeItem(PENDING_TASK_KEY);
+                      setPendingInfo(null);
+                    }
+                  } catch (e) {
+                    console.warn('[Chat] Could not check previous task:', e);
+                    localStorage.removeItem(PENDING_TASK_KEY);
+                    setPendingInfo(null);
+                  }
+                })();
+                
+              } else if (elapsed < 180) {
+                // Old-style sync task - just show warning
+                setPendingInfo(`⚠️ Previous task "${pendingTask.message.slice(0, 30)}..." may have been interrupted. Consider resending.`);
+                setTimeout(() => {
+                  localStorage.removeItem(PENDING_TASK_KEY);
+                  setPendingInfo(null);
+                }, 10000);
+              } else {
+                // Task is too old, clear it
+                localStorage.removeItem(PENDING_TASK_KEY);
+              }
+            } catch (e) {
+              localStorage.removeItem(PENDING_TASK_KEY);
+            }
+          }
           return;
         }
       }
@@ -246,46 +359,165 @@ export default function ChatPage() {
     pendingMessageRef.current = currentSessionId;
 
     try {
-      const response = await chatAPI.sendMessage({
-        message: messageToSend,
-        conversation_id: currentSessionId || undefined,
-      });
-
-      const data = response.data;
-      const assistantMessage: Message = {
-        id: data.message_id || Date.now().toString() + '-a',
-        role: 'assistant',
-        content: data.response || 'No response',
-        timestamp: data.timestamp || new Date().toISOString(),
-        agents_involved: data.agents_involved,
-        sources: data.sources || [],
-        thinking: [...thinkingSteps],
-      };
-
-      setSessions(prev => prev.map(s => {
-        if (s.id === currentSessionId) {
-          return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+      if (useAsyncMode) {
+        // ============================================
+        // ASYNC MODE: Submit task and poll for result
+        // Task runs in background even if user leaves page
+        // ============================================
+        setPendingInfo(`Submitting task... (async mode - runs in background)`);
+        
+        const submitResponse = await chatAPI.sendMessage({
+          message: messageToSend,
+          conversation_id: currentSessionId || undefined,
+          async_mode: true
+        });
+        
+        const { task_id } = submitResponse.data;
+        
+        // Save pending task to localStorage for recovery
+        const pendingTask: PendingTask = {
+          sessionId: currentSessionId!,
+          taskId: task_id,
+          message: messageToSend,
+          startedAt: new Date().toISOString()
+        };
+        localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
+        
+        setPendingInfo(`Task submitted (${task_id.slice(0, 8)}...) - processing in background...`);
+        
+        // Poll for result
+        let attempts = 0;
+        const maxAttempts = 120; // 4 minutes max (120 * 2s)
+        
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+          attempts++;
+          
+          try {
+            const statusResponse = await chatAPI.getTaskStatus(task_id);
+            const status = statusResponse.data;
+            
+            // Update progress info
+            setPendingInfo(`${status.current_step || 'Processing...'} (${Math.round(status.progress)}%)`);
+            
+            if (status.status === 'completed') {
+              // Get full result
+              const resultResponse = await chatAPI.getTaskResult(task_id);
+              const result = resultResponse.data.result;
+              
+              const assistantMessage: Message = {
+                id: task_id,
+                role: 'assistant',
+                content: result.response || 'No response',
+                timestamp: new Date().toISOString(),
+                agents_involved: result.agents_involved || status.agents_involved,
+                sources: result.sources || [],
+                thinking: [...thinkingSteps],
+              };
+              
+              setSessions(prev => prev.map(s => {
+                if (s.id === currentSessionId) {
+                  return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+                }
+                return s;
+              }));
+              
+              localStorage.removeItem(PENDING_TASK_KEY);
+              break;
+            }
+            
+            if (status.status === 'failed') {
+              throw new Error(status.error || 'Task failed');
+            }
+            
+            if (status.status === 'cancelled') {
+              throw new Error('Task was cancelled');
+            }
+            
+          } catch (pollError: any) {
+            // If polling fails, task might still be running - just continue
+            console.warn('[Chat] Poll error:', pollError.message);
+          }
         }
-        return s;
-      }));
+        
+        if (attempts >= maxAttempts) {
+          throw new Error('Task timed out after 4 minutes');
+        }
+        
+      } else {
+        // ============================================
+        // SYNC MODE: Wait for response (original behavior)
+        // ============================================
+        setPendingInfo(`Processing "${messageToSend.slice(0, 30)}..." - please wait (may take 20-60 seconds)`);
+        
+        // Save pending task to localStorage so we can recover if page is left
+        const pendingTask: PendingTask = {
+          sessionId: currentSessionId!,
+          taskId: '',
+          message: messageToSend,
+          startedAt: new Date().toISOString()
+        };
+        localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
+        
+        // Create abort controller for this request
+        abortControllerRef.current = new AbortController();
+        
+        const response = await chatAPI.sendMessage({
+          message: messageToSend,
+          conversation_id: currentSessionId || undefined,
+          async_mode: false
+        }, abortControllerRef.current.signal);
+
+        const data = response.data;
+        const assistantMessage: Message = {
+          id: data.message_id || Date.now().toString() + '-a',
+          role: 'assistant',
+          content: data.response || 'No response',
+          timestamp: data.timestamp || new Date().toISOString(),
+          agents_involved: data.agents_involved,
+          sources: data.sources || [],
+          thinking: [...thinkingSteps],
+        };
+
+        setSessions(prev => prev.map(s => {
+          if (s.id === currentSessionId) {
+            return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+          }
+          return s;
+        }));
+
+        // Clear pending task on success
+        localStorage.removeItem(PENDING_TASK_KEY);
+      }
     } catch (err: any) {
-      const errorMessage: Message = {
-        id: Date.now().toString() + '-err',
-        role: 'assistant',
-        content: `Error: ${err.response?.data?.detail || err.message || 'Failed'}`,
-        timestamp: new Date().toISOString(),
-        thinking: [...thinkingSteps],
-      };
-      setSessions(prev => prev.map(s => {
-        if (s.id === currentSessionId) {
-          return { ...s, messages: [...s.messages, errorMessage] };
-        }
-        return s;
-      }));
+      // Check if request was cancelled (user left page)
+      if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
+        console.log('[Chat] Request was cancelled - task may still be processing on server');
+        // Don't remove pending task - it might still complete
+        setPendingInfo('Request cancelled. If you left and came back, the task may still complete.');
+      } else {
+        const errorMessage: Message = {
+          id: Date.now().toString() + '-err',
+          role: 'assistant',
+          content: `Error: ${err.response?.data?.detail || err.message || 'Failed'}`,
+          timestamp: new Date().toISOString(),
+          thinking: [...thinkingSteps],
+        };
+        setSessions(prev => prev.map(s => {
+          if (s.id === currentSessionId) {
+            return { ...s, messages: [...s.messages, errorMessage] };
+          }
+          return s;
+        }));
+        // Clear pending task on error
+        localStorage.removeItem(PENDING_TASK_KEY);
+      }
     }
 
     setLoading(false);
+    setPendingInfo(null);
     pendingMessageRef.current = null;
+    abortControllerRef.current = null;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -496,6 +728,14 @@ export default function ChatPage() {
 
         {/* Input Area */}
         <div className="border-t border-gray-700 bg-gray-800 p-4">
+          {/* Pending Task Warning */}
+          {pendingInfo && (
+            <div className="mb-3 p-3 bg-yellow-900/30 border border-yellow-700/50 rounded-lg text-yellow-400 text-sm flex items-start gap-2">
+              <Loader2 className="w-4 h-4 animate-spin mt-0.5 flex-shrink-0" />
+              <span>{pendingInfo}</span>
+            </div>
+          )}
+          
           <div className="flex gap-3">
             <textarea
               ref={inputRef}
@@ -517,13 +757,47 @@ export default function ChatPage() {
           </div>
           
           {activeSession && messages.length > 0 && (
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2 flex justify-between items-center">
+              {/* Async mode toggle */}
+              <button
+                onClick={() => setUseAsyncMode(!useAsyncMode)}
+                className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
+                  useAsyncMode 
+                    ? 'bg-green-900/50 text-green-400 hover:bg-green-900/70' 
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+                title={useAsyncMode 
+                  ? "Async Mode: Tasks run in background - you can leave and come back" 
+                  : "Sync Mode: Wait for response - leaving will cancel the request"
+                }
+              >
+                <span className={`w-2 h-2 rounded-full ${useAsyncMode ? 'bg-green-400' : 'bg-gray-500'}`} />
+                {useAsyncMode ? '🔄 Background Mode' : '⏳ Wait Mode'}
+              </button>
+              
               <button
                 onClick={clearCurrentChat}
                 className="text-xs text-gray-500 hover:text-red-400 flex items-center gap-1"
               >
                 <Trash2 className="w-3 h-3" />
                 Clear chat
+              </button>
+            </div>
+          )}
+          
+          {/* Show mode info for empty chats */}
+          {(!activeSession || messages.length === 0) && (
+            <div className="mt-2 flex justify-start">
+              <button
+                onClick={() => setUseAsyncMode(!useAsyncMode)}
+                className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
+                  useAsyncMode 
+                    ? 'bg-green-900/50 text-green-400 hover:bg-green-900/70' 
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${useAsyncMode ? 'bg-green-400' : 'bg-gray-500'}`} />
+                {useAsyncMode ? '🔄 Background Mode (safe to leave)' : '⏳ Wait Mode (stay on page)'}
               </button>
             </div>
           )}
