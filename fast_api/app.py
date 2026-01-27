@@ -47,6 +47,7 @@ async def create_agents():
     from agents.core.planning_agent import PlanningAgent
     from agents.core.thinking_agent import ThinkingAgent
     from agents.core.roles_agent import RolesAgent
+    from agents.core.casual_chat_agent import CasualChatAgent
     
     from agents.auxiliary.data_agent import DataAgent
     from agents.auxiliary.tool_agent import ToolAgent
@@ -63,6 +64,7 @@ async def create_agents():
     await registry.register_agent(PlanningAgent())
     await registry.register_agent(ThinkingAgent())
     await registry.register_agent(RolesAgent())
+    await registry.register_agent(CasualChatAgent())
     
     # Register auxiliary agents
     await registry.register_agent(DataAgent())
