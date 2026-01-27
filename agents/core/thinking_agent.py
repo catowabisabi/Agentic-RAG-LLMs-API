@@ -189,7 +189,7 @@ Brief analysis (2-3 sentences):"""
         )
         
         chain = prompt | self.llm
-        result = chain.invoke({"query": query})
+        result = await chain.ainvoke({"query": query})
         return result.content.strip()
     
     async def _step_decompose(self, query: str, analysis: str) -> List[str]:
@@ -204,7 +204,7 @@ List 2-4 key components (one per line):"""
         )
         
         chain = prompt | self.llm
-        result = chain.invoke({"query": query, "analysis": analysis})
+        result = await chain.ainvoke({"query": query, "analysis": analysis})
         
         lines = result.content.strip().split("\n")
         return [line.strip().lstrip("0123456789.-) ") for line in lines if line.strip()]
@@ -223,7 +223,7 @@ Your reasoning (2-4 sentences):"""
         )
         
         chain = prompt | self.llm
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "component": component,
             "context": context[:2000] if context else "No additional context"
         })
@@ -247,7 +247,7 @@ Provide a comprehensive, well-reasoned answer:"""
         ])
         
         chain = prompt | self.llm
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "query": query,
             "reasonings": reasonings_text
         })
@@ -277,7 +277,7 @@ Provide:
             0
         )
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "content": content,
             "analysis_type": analysis_type
         })
@@ -324,7 +324,7 @@ Then recommend the best option."""
             0
         )
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "options": options_text,
             "criteria": criteria_text
         })

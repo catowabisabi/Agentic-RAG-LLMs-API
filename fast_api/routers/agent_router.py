@@ -5,6 +5,7 @@ REST API endpoints for agent management:
 - List agents
 - Get agent status
 - Send tasks to agents
+- Activity history (via EventBus)
 """
 
 import logging
@@ -21,6 +22,14 @@ from agents.shared_services.message_protocol import (
     MessageType,
     TaskAssignment
 )
+
+# Import EventBus for activity history
+try:
+    from services.event_bus import event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    event_bus = None
 
 logger = logging.getLogger(__name__)
 
@@ -362,4 +371,57 @@ async def get_all_agents_activity(limit: int = 20):
     return {
         "total_messages": len(all_activity),
         "activity": all_activity[:limit * 2]  # Return up to 2x limit
+    }
+
+# ============== EventBus-based Endpoints ==============
+
+@router.get("/status/realtime")
+async def get_realtime_agent_statuses():
+    """Get real-time agent statuses from EventBus"""
+    if not HAS_EVENT_BUS or not event_bus:
+        # Fallback to registry
+        registry = AgentRegistry()
+        statuses = {}
+        for name, agent in registry._agents.items():
+            statuses[name] = {
+                "agent_name": name,
+                "state": agent.status.value if hasattr(agent.status, 'value') else str(agent.status),
+                "current_task": agent.current_task.task_id if agent.current_task else None,
+                "message": None,
+                "progress": 0
+            }
+        return {"source": "registry", "statuses": statuses}
+    
+    return {
+        "source": "event_bus",
+        "statuses": event_bus.get_all_agent_statuses()
+    }
+
+
+@router.get("/events/history")
+async def get_event_history(agent_name: str = None, limit: int = 50):
+    """Get event history from EventBus"""
+    if not HAS_EVENT_BUS or not event_bus:
+        return {"error": "EventBus not available", "history": []}
+    
+    history = event_bus.get_activity_history(agent_name, limit)
+    return {
+        "agent_name": agent_name,
+        "total": len(history),
+        "history": history
+    }
+
+
+@router.post("/interrupt/task/{task_id}")
+async def interrupt_task(task_id: str, reason: str = "User requested"):
+    """Request interrupt for a specific task"""
+    if not HAS_EVENT_BUS or not event_bus:
+        raise HTTPException(status_code=501, detail="EventBus not available")
+    
+    await event_bus.request_interrupt(task_id=task_id, reason=reason)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "reason": reason,
+        "message": "Interrupt requested. Task will stop at next checkpoint."
     }

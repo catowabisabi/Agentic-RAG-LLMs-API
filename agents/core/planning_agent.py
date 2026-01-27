@@ -147,7 +147,7 @@ Respond with your execution plan."""
         chain = prompt | self.llm.with_structured_output(ExecutionPlan)
         
         try:
-            plan = chain.invoke({
+            plan = await chain.ainvoke({
                 "query": query,
                 "agents": agent_descriptions
             })
@@ -281,7 +281,7 @@ Create an improved plan that addresses the feedback."""
         chain = prompt | self.llm.with_structured_output(ExecutionPlan)
         
         try:
-            plan = chain.invoke({
+            plan = await chain.ainvoke({
                 "plan": str(original_plan),
                 "feedback": feedback,
                 "agents": agent_descriptions
@@ -333,7 +333,7 @@ Create a corrected plan."""
         chain = prompt | self.llm.with_structured_output(ExecutionPlan)
         
         try:
-            refined = chain.invoke({
+            refined = await chain.ainvoke({
                 "goal": plan.goal,
                 "steps": str([s.model_dump() for s in plan.steps]),
                 "errors": "\n".join(errors),

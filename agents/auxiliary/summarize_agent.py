@@ -101,7 +101,7 @@ Provide:
         chain = prompt | self.llm.with_structured_output(Summary)
         
         try:
-            result = chain.invoke({
+            result = await chain.ainvoke({
                 "content": content,
                 "max_length": max_length,
                 "style": style
@@ -114,7 +114,7 @@ Provide:
         except Exception as e:
             # Fallback to unstructured
             chain = prompt | self.llm
-            result = chain.invoke({
+            result = await chain.ainvoke({
                 "content": content,
                 "max_length": max_length,
                 "style": style
@@ -146,7 +146,7 @@ Return only the key points as a numbered list."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "content": content,
             "num_points": num_points
         })
@@ -192,7 +192,7 @@ Summary:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "content": content,
             "length_guide": length_guide.get(length, "1 paragraph")
         })
@@ -221,7 +221,7 @@ Most important sentences:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "content": content,
             "num_sentences": num_sentences
         })
@@ -254,7 +254,7 @@ Bullet points:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "content": content,
             "max_points": max_points
         })

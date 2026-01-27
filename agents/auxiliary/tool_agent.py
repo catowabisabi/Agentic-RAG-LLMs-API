@@ -238,7 +238,7 @@ Return the name of the best tool, or 'none' if no tool is suitable."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "task_description": task_description,
             "tool_descriptions": tool_descriptions
         })
@@ -285,7 +285,7 @@ Return only valid JSON with the parameter values."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "task_description": task.context,
             "tool_name": tool_name,
             "parameters": json.dumps(tool_def.parameters)

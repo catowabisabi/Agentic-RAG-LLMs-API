@@ -161,7 +161,7 @@ Show your work and provide the final numerical answer."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({"expression": expression})
+        result = await chain.ainvoke({"expression": expression})
         
         # Extract the final answer
         content = result.content
@@ -308,7 +308,7 @@ Provide only the numerical answer."""
             )
             
             chain = prompt | self.llm
-            response = chain.invoke({
+            response = await chain.ainvoke({
                 "value": value,
                 "from_unit": from_unit,
                 "to_unit": to_unit
@@ -346,7 +346,7 @@ Solution:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({"problem": problem})
+        result = await chain.ainvoke({"problem": problem})
         
         # Parse the solution
         lines = result.content.strip().split("\n")

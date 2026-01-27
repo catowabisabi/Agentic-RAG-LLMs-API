@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff } from 'lucide-react';
+import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { chatAPI, createWebSocket } from '../lib/api';
 
 interface Source {
@@ -15,6 +15,15 @@ interface ThinkingStep {
   agent: string;
   content: any;
   timestamp: string;
+  step?: number;
+}
+
+interface AgentStatus {
+  name: string;
+  state: string;
+  message?: string;
+  progress?: number;
+  task_id?: string;
 }
 
 interface Message {
@@ -46,6 +55,24 @@ interface PendingTask {
   startedAt: string;
 }
 
+// Agent state icons mapping
+const getAgentStateIcon = (state: string) => {
+  switch (state?.toLowerCase()) {
+    case 'working':
+    case 'calling_llm':
+    case 'querying_rag':
+      return <Zap className="w-3 h-3 text-yellow-400 animate-pulse" />;
+    case 'thinking':
+      return <Brain className="w-3 h-3 text-purple-400 animate-pulse" />;
+    case 'processing':
+      return <Activity className="w-3 h-3 text-blue-400 animate-pulse" />;
+    case 'error':
+      return <AlertTriangle className="w-3 h-3 text-red-400" />;
+    default:
+      return <Clock className="w-3 h-3 text-gray-500" />;
+  }
+};
+
 export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -58,6 +85,9 @@ export default function ChatPage() {
   const [wsConnected, setWsConnected] = useState(false);
   const [pendingInfo, setPendingInfo] = useState<string | null>(null);
   const [useAsyncMode, setUseAsyncMode] = useState(true); // Enable async mode by default
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({});
+  const [isInterrupting, setIsInterrupting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -66,6 +96,11 @@ export default function ChatPage() {
 
   const activeSession = sessions.find(s => s.id === activeSessionId);
   const messages = activeSession?.messages || [];
+  
+  // Check if any agent is currently working
+  const hasWorkingAgents = Object.values(agentStatuses).some(
+    a => ['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(a.state?.toLowerCase())
+  );
 
   // WebSocket connection for real-time thinking updates
   useEffect(() => {
@@ -82,13 +117,38 @@ export default function ChatPage() {
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            // Capture thinking steps - dedupe by timestamp + type + agent
-            if (data.type === 'thinking' || data.type === 'agent_started' || data.type === 'task_assigned') {
+            
+            // Handle heartbeat with agent statuses
+            if (data.type === 'heartbeat' && data.agent_statuses) {
+              setAgentStatuses(data.agent_statuses);
+              return;
+            }
+            
+            // Handle agent status changes
+            if (data.type === 'agent_status_changed') {
+              setAgentStatuses(prev => ({
+                ...prev,
+                [data.agent_name]: {
+                  name: data.agent_name,
+                  state: data.state,
+                  message: data.message,
+                  progress: data.progress,
+                  task_id: data.task_id
+                }
+              }));
+            }
+            
+            // Capture thinking/plan steps
+            if (data.type === 'thinking' || data.type === 'plan_step' || 
+                data.type === 'agent_started' || data.type === 'task_assigned' ||
+                data.type === 'rag_query' || data.type === 'rag_result' ||
+                data.type === 'llm_call_start' || data.type === 'task_completed') {
               const step: ThinkingStep = {
                 type: data.type,
-                agent: data.agent || data.source || 'system',
-                content: data.content || data,
-                timestamp: data.timestamp || new Date().toISOString()
+                agent: data.agent_name || data.agent || data.source || 'system',
+                content: data.data || data.content || data,
+                timestamp: data.timestamp || new Date().toISOString(),
+                step: data.step
               };
               setThinkingSteps(prev => {
                 // Check for duplicates
@@ -98,7 +158,9 @@ export default function ChatPage() {
                   s.agent === step.agent
                 );
                 if (isDupe) return prev;
-                return [...prev, step];
+                // Keep last 30 steps
+                const updated = [...prev, step];
+                return updated.slice(-30);
               });
             }
           } catch (e) {
@@ -315,6 +377,29 @@ export default function ChatPage() {
     return words.length > 25 ? words.slice(0, 25) + '...' : words;
   };
 
+  // Interrupt current task
+  const interruptTask = async () => {
+    if (!currentTaskId || isInterrupting) return;
+    
+    setIsInterrupting(true);
+    try {
+      const response = await fetch(`http://localhost:1130/agents/interrupt/task/${currentTaskId}`, {
+        method: 'POST'
+      });
+      
+      if (response.ok) {
+        setPendingInfo('⛔ Interrupt requested - waiting for agents to stop...');
+        // The task will complete with interrupted status
+      } else {
+        console.error('[Chat] Interrupt failed');
+      }
+    } catch (e) {
+      console.error('[Chat] Interrupt error:', e);
+    } finally {
+      setIsInterrupting(false);
+    }
+  };
+
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
 
@@ -356,6 +441,7 @@ export default function ChatPage() {
     setInput('');
     setLoading(true);
     setThinkingSteps([]);
+    setCurrentTaskId(null);
     pendingMessageRef.current = currentSessionId;
 
     try {
@@ -374,6 +460,9 @@ export default function ChatPage() {
         
         const { task_id } = submitResponse.data;
         
+        // Track current task for interrupt functionality
+        setCurrentTaskId(task_id);
+        
         // Save pending task to localStorage for recovery
         const pendingTask: PendingTask = {
           sessionId: currentSessionId!,
@@ -383,7 +472,7 @@ export default function ChatPage() {
         };
         localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
         
-        setPendingInfo(`Task submitted (${task_id.slice(0, 8)}...) - processing in background...`);
+        setPendingInfo(`Task ${task_id.slice(0, 8)}... - agents are working`);
         
         // Poll for result
         let attempts = 0;
@@ -400,15 +489,17 @@ export default function ChatPage() {
             // Update progress info
             setPendingInfo(`${status.current_step || 'Processing...'} (${Math.round(status.progress)}%)`);
             
-            if (status.status === 'completed') {
+            if (status.status === 'completed' || status.status === 'interrupted') {
               // Get full result
               const resultResponse = await chatAPI.getTaskResult(task_id);
               const result = resultResponse.data.result;
               
+              const wasInterrupted = status.status === 'interrupted' || result.status === 'interrupted';
+              
               const assistantMessage: Message = {
                 id: task_id,
                 role: 'assistant',
-                content: result.response || 'No response',
+                content: wasInterrupted ? `⛔ Task interrupted. Partial result:\n\n${result.response || 'No response yet'}` : (result.response || 'No response'),
                 timestamp: new Date().toISOString(),
                 agents_involved: result.agents_involved || status.agents_involved,
                 sources: result.sources || [],
@@ -516,6 +607,7 @@ export default function ChatPage() {
 
     setLoading(false);
     setPendingInfo(null);
+    setCurrentTaskId(null);
     pendingMessageRef.current = null;
     abortControllerRef.current = null;
   };
@@ -537,10 +629,27 @@ export default function ChatPage() {
 
   const formatThinkingContent = (content: any): string => {
     if (typeof content === 'string') return content;
+    if (content.thought) return content.thought;
     if (content.status) return content.status;
-    if (content.task) return content.task;
+    if (content.task) return `Task: ${content.task}`;
     if (content.query) return `Query: ${content.query}`;
+    if (content.sources_count !== undefined) return `Found ${content.sources_count} sources`;
+    if (content.response_length) return `Generated ${content.response_length} char response`;
+    if (content.message) return content.message;
     return JSON.stringify(content);
+  };
+  
+  const getStepIcon = (type: string) => {
+    switch (type) {
+      case 'task_assigned': return '📋';
+      case 'thinking': return '💭';
+      case 'plan_step': return '📝';
+      case 'rag_query': return '🔍';
+      case 'rag_result': return '📚';
+      case 'llm_call_start': return '🤖';
+      case 'task_completed': return '✅';
+      default: return '▶️';
+    }
   };
 
   return (
@@ -691,29 +800,68 @@ export default function ChatPage() {
               
               {/* Active Thinking Indicator */}
               {loading && (
-                <div className="space-y-2">
+                <div className="space-y-3">
+                  {/* Main thinking card with interrupt button */}
                   <div className="flex justify-start">
                     <div className="bg-gray-700 rounded-xl px-4 py-3 flex items-center gap-3">
                       <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-                      <div className="flex flex-col">
-                        <span className="text-white text-sm">Thinking...</span>
-                        <span className="text-gray-400 text-xs">Processing your request</span>
+                      <div className="flex flex-col flex-1">
+                        <span className="text-white text-sm">Agents are working...</span>
+                        <span className="text-gray-400 text-xs">{pendingInfo || 'Processing your request'}</span>
                       </div>
+                      {currentTaskId && (
+                        <button
+                          onClick={interruptTask}
+                          disabled={isInterrupting}
+                          className="ml-3 flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-lg text-white text-xs transition-colors"
+                          title="Stop the current task"
+                        >
+                          <StopCircle className="w-3 h-3" />
+                          {isInterrupting ? 'Stopping...' : 'Stop'}
+                        </button>
+                      )}
                     </div>
                   </div>
                   
+                  {/* Real-time Agent Status Panel */}
+                  {hasWorkingAgents && (
+                    <div className="ml-4 p-3 bg-blue-900/20 border border-blue-800/50 rounded-lg">
+                      <div className="flex items-center gap-2 text-xs text-blue-400 mb-2">
+                        <Activity className="w-3 h-3" />
+                        <span>Active Agents</span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        {Object.values(agentStatuses)
+                          .filter(a => ['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(a.state?.toLowerCase()))
+                          .map((agent, i) => (
+                            <div key={i} className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
+                              {getAgentStateIcon(agent.state)}
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs text-white truncate">{agent.name}</span>
+                                <span className="text-xs text-gray-400 truncate">{agent.message || agent.state}</span>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                  
                   {/* Live thinking steps */}
                   {thinkingSteps.length > 0 && (
-                    <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg animate-pulse">
-                      <div className="flex items-center gap-2 text-xs text-purple-400 mb-2">
-                        <Brain className="w-3 h-3" />
-                        <span>Live Chain of Thought</span>
+                    <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg">
+                      <div className="flex items-center justify-between text-xs text-purple-400 mb-2">
+                        <div className="flex items-center gap-2">
+                          <Brain className="w-3 h-3 animate-pulse" />
+                          <span>Live Chain of Thought</span>
+                        </div>
+                        <span className="text-gray-500">{thinkingSteps.length} steps</span>
                       </div>
-                      <div className="space-y-1">
+                      <div className="space-y-1 max-h-48 overflow-y-auto">
                         {thinkingSteps.map((step, i) => (
-                          <div key={i} className="text-xs text-gray-400">
-                            <span className="text-purple-400">[{step.agent}]</span>
-                            <span className="ml-2">{formatThinkingContent(step.content)}</span>
+                          <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
+                            <span>{getStepIcon(step.type)}</span>
+                            <span className="text-purple-400 flex-shrink-0">[{step.agent}]</span>
+                            <span className="flex-1">{formatThinkingContent(step.content)}</span>
                           </div>
                         ))}
                       </div>

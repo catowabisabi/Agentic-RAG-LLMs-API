@@ -96,6 +96,39 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "subscribed",
                         "agents": agent_names
                     })
+                
+                elif message_type == "subscribe_session":
+                    # Subscribe to updates for a specific chat session
+                    session_id = content.get("session_id")
+                    if session_id:
+                        ws_manager.subscribe_session(client_id, session_id)
+                        await websocket.send_json({
+                            "type": "session_subscribed",
+                            "session_id": session_id
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "session_id required"
+                        })
+                
+                elif message_type == "get_session_state":
+                    # Get current state of a session (tasks, messages, etc.)
+                    from services.session_db import session_db
+                    session_id = content.get("session_id")
+                    if session_id:
+                        state = session_db.get_session_state(session_id)
+                        await websocket.send_json({
+                            "type": "session_state",
+                            "session_id": session_id,
+                            "state": state,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "session_id required"
+                        })
                     
                 elif message_type == "ping":
                     await websocket.send_json({"type": "pong"})

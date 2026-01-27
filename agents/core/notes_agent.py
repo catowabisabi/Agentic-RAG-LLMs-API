@@ -111,7 +111,7 @@ Respond with your structured note."""
         chain = prompt | self.llm.with_structured_output(StructuredNote)
         
         try:
-            note = chain.invoke({
+            note = await chain.ainvoke({
                 "content": content,
                 "context": context or "No additional context"
             })
@@ -156,7 +156,7 @@ Create a structured note that captures the essential information."""
         chain = prompt | self.llm.with_structured_output(StructuredNote)
         
         try:
-            note = chain.invoke({
+            note = await chain.ainvoke({
                 "content": content,
                 "max_length": max_length
             })

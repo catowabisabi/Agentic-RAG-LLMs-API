@@ -244,7 +244,7 @@ Provide your analysis."""
         chain = prompt | self.llm.with_structured_output(RoleCorrection)
         
         try:
-            correction = chain.invoke({
+            correction = await chain.ainvoke({
                 "agent_name": agent_name,
                 "role_name": role.role_name,
                 "role_description": role.role_description,
@@ -293,7 +293,7 @@ Provide:
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "agent_name": target_agent,
             "role_name": role.role_name,
             "role_description": role.role_description,

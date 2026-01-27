@@ -28,6 +28,7 @@ from agents.shared_services.message_protocol import (
 from config.config import Config
 from services.vectordb_manager import vectordb_manager
 from services.task_manager import task_manager, TaskStatus
+from services.session_db import session_db, TaskStatus as DBTaskStatus, StepType
 
 logger = logging.getLogger(__name__)
 
@@ -145,11 +146,46 @@ async def process_chat_task(
     """
     Background task handler for chat processing.
     This runs independently of the frontend connection.
+    
+    Now integrated with SessionDB for persistent storage and recovery.
     """
     ws_manager = WebSocketManager()
     registry = AgentRegistry()
     
-    # Update progress
+    # Ensure session exists in database
+    session = session_db.get_or_create_session(conversation_id, "Chat Session")
+    
+    # Create root task in database with session-linked UID
+    db_task = session_db.create_task(
+        session_id=conversation_id,
+        agent_name="manager_agent",
+        task_type="user_query",
+        description=message[:200],
+        input_data={"query": message, "use_rag": use_rag, "context": context}
+    )
+    task_uid = db_task.task_uid
+    
+    # Store user message in database
+    session_db.add_message(
+        session_id=conversation_id,
+        role="user",
+        content=message,
+        task_uid=task_uid
+    )
+    
+    # Update task status to running
+    session_db.update_task_status(task_uid, DBTaskStatus.RUNNING)
+    
+    # Add initialization step
+    session_db.add_step(
+        task_uid=task_uid,
+        session_id=conversation_id,
+        agent_name="system",
+        step_type=StepType.THINKING,
+        content={"status": "Initializing task", "task_id": task_id, "task_uid": task_uid}
+    )
+    
+    # Update progress (legacy task_manager for polling)
     task_manager.update_progress(task_id, 5, "Initializing...", ["manager_agent"])
     
     try:
@@ -160,23 +196,36 @@ async def process_chat_task(
         
         task_manager.update_progress(task_id, 10, "Manager agent analyzing query...")
         
-        # Broadcast start via WebSocket
+        # Add step for manager start
+        session_db.add_step(
+            task_uid=task_uid,
+            session_id=conversation_id,
+            agent_name="manager_agent",
+            step_type=StepType.THINKING,
+            content={"status": "Analyzing query", "query": message[:100]}
+        )
+        
+        # Broadcast start via WebSocket (with task_uid for session linking)
         await ws_manager.broadcast_agent_activity({
             "type": "agent_started",
             "agent": "manager_agent",
             "task_id": task_id,
+            "task_uid": task_uid,
+            "session_id": conversation_id,
             "content": {"query": message[:100], "conversation_id": conversation_id},
             "timestamp": datetime.now().isoformat()
         })
         
-        # Create task assignment
+        # Create task assignment (use task_uid for session linking)
         task = TaskAssignment(
-            task_id=task_id,
+            task_id=task_uid,  # Use session-linked UID
             task_type="user_query",
             description=message,
             input_data={
                 "query": message,
                 "conversation_id": conversation_id,
+                "session_id": conversation_id,
+                "task_uid": task_uid,
                 "use_rag": use_rag,
                 "context": context
             },
@@ -202,7 +251,7 @@ async def process_chat_task(
             agents_involved = ["manager_agent"]
             sources = []
         
-        # Store in conversation history
+        # Store in conversation history (legacy)
         if conversation_id in conversations:
             conversations[conversation_id].append({
                 "id": task_id,
@@ -213,10 +262,50 @@ async def process_chat_task(
                 "processing_time": processing_time
             })
         
-        # Broadcast completion
+        # Store assistant message in database
+        session_db.add_message(
+            session_id=conversation_id,
+            role="assistant",
+            content=response_text,
+            task_uid=task_uid,
+            agents_involved=agents_involved,
+            sources=sources,
+            metadata={"processing_time": processing_time}
+        )
+        
+        # Update task as completed in database
+        session_db.update_task_status(
+            task_uid,
+            DBTaskStatus.COMPLETED,
+            result={
+                "response": response_text,
+                "agents_involved": agents_involved,
+                "sources": sources,
+                "processing_time": processing_time
+            }
+        )
+        
+        # Add completion step
+        session_db.add_step(
+            task_uid=task_uid,
+            session_id=conversation_id,
+            agent_name="manager_agent",
+            step_type=StepType.LLM_RESPONSE,
+            content={
+                "status": "completed",
+                "response_preview": response_text[:200] + "..." if len(response_text) > 200 else response_text,
+                "agents": agents_involved,
+                "processing_time": processing_time
+            },
+            duration_ms=int(processing_time * 1000)
+        )
+        
+        # Broadcast completion (with session info)
         await ws_manager.broadcast_agent_activity({
             "type": "task_completed",
             "task_id": task_id,
+            "task_uid": task_uid,
+            "session_id": conversation_id,
             "agent": "manager_agent",
             "content": {
                 "response": response_text[:200] + "..." if len(response_text) > 200 else response_text,
@@ -232,14 +321,30 @@ async def process_chat_task(
             "agents_involved": agents_involved,
             "sources": sources,
             "processing_time": processing_time,
-            "conversation_id": conversation_id
+            "conversation_id": conversation_id,
+            "task_uid": task_uid
         }
         
     except Exception as e:
         logger.error(f"Background task error: {e}", exc_info=True)
+        
+        # Update task as failed in database
+        session_db.update_task_status(task_uid, DBTaskStatus.FAILED, error=str(e))
+        
+        # Add error step
+        session_db.add_step(
+            task_uid=task_uid,
+            session_id=conversation_id,
+            agent_name="system",
+            step_type=StepType.ERROR,
+            content={"error": str(e)}
+        )
+        
         await ws_manager.broadcast_agent_activity({
             "type": "task_error",
             "task_id": task_id,
+            "task_uid": task_uid,
+            "session_id": conversation_id,
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         })

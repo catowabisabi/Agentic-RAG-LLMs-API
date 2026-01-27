@@ -24,6 +24,7 @@ from fast_api.routers.websocket_router import router as websocket_router
 from fast_api.routers.agent_router import router as agent_router
 from fast_api.routers.rag_router import router as rag_router
 from fast_api.routers.chat_router import router as chat_router
+from fast_api.routers.session_router import router as session_router
 
 # Configure logging
 logging.basicConfig(
@@ -116,6 +117,7 @@ app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(rag_router)
 app.include_router(chat_router)
+app.include_router(session_router)
 
 
 @app.get("/")

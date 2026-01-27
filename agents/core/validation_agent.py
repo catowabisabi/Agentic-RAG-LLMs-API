@@ -131,7 +131,7 @@ Provide a detailed validation."""
         chain = prompt | self.llm.with_structured_output(DetailedValidation)
         
         try:
-            validation = chain.invoke({
+            validation = await chain.ainvoke({
                 "query": original_query,
                 "response": response,
                 "context": context or "No context provided"

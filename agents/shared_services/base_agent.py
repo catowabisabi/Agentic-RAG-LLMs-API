@@ -4,6 +4,8 @@ Base Agent Class
 Abstract base class for all agents in the multi-agent system.
 Provides common functionality for WebSocket communication, 
 message handling, and lifecycle management.
+
+Now integrated with EventBus for real-time status updates.
 """
 
 import asyncio
@@ -13,14 +15,22 @@ from typing import Dict, Any, Optional, Callable, List
 from datetime import datetime
 
 from .message_protocol import (
-    AgentMessage, 
-    MessageType, 
+    AgentMessage,
+    MessageType,
     MessageProtocol,
     AgentStatus,
     TaskAssignment,
     ValidationResult
 )
 from .websocket_manager import WebSocketManager
+
+# Import EventBus for real-time updates
+try:
+    from services.event_bus import event_bus, EventType, AgentState
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    event_bus = None
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +77,10 @@ class BaseAgent(ABC):
         }
         
         logger.info(f"Agent initialized: {agent_name} ({agent_role})")
+        
+        # Register with EventBus
+        if HAS_EVENT_BUS and event_bus:
+            event_bus.register_agent(agent_name, agent_role, agent_description)
     
     # ============== Lifecycle Methods ==============
     
@@ -78,6 +92,14 @@ class BaseAgent(ABC):
         
         await self._update_status(AgentStatus.IDLE)
         
+        # Emit start event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.emit(
+                EventType.AGENT_STARTED,
+                self.agent_name,
+                {"role": self.agent_role, "description": self.agent_description}
+            )
+        
         # Start message processing loop
         asyncio.create_task(self._message_loop())
         
@@ -87,6 +109,14 @@ class BaseAgent(ABC):
         """Stop the agent gracefully"""
         self.should_stop = True
         self.is_running = False
+        
+        # Emit stop event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.emit(
+                EventType.AGENT_STOPPED,
+                self.agent_name,
+                {"reason": "graceful_shutdown"}
+            )
         
         await self.ws_manager.unregister_agent(self.agent_name)
         
@@ -206,7 +236,26 @@ class BaseAgent(ABC):
         if not self.current_task:
             return
         
+        task_id = self.current_task.task_id
         await self._update_status(AgentStatus.WORKING)
+        
+        # Emit task assigned event via EventBus
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.emit(
+                EventType.TASK_ASSIGNED,
+                self.agent_name,
+                {
+                    "task_type": self.current_task.task_type,
+                    "description": self.current_task.description[:100] if self.current_task.description else ""
+                },
+                task_id=task_id
+            )
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.WORKING,
+                task_id=task_id,
+                message=f"Processing {self.current_task.task_type}"
+            )
         
         # Notify frontend that agent started working
         await self.ws_manager.send_agent_message_to_clients(
@@ -239,9 +288,30 @@ class BaseAgent(ABC):
             
         except Exception as e:
             logger.error(f"Error executing task in {self.agent_name}: {e}")
+            # Emit error event
+            if HAS_EVENT_BUS and event_bus:
+                await event_bus.emit(
+                    EventType.TASK_FAILED,
+                    self.agent_name,
+                    {"error": str(e)},
+                    task_id=task_id
+                )
+                await event_bus.update_status(
+                    self.agent_name,
+                    AgentState.ERROR,
+                    task_id=task_id,
+                    error=str(e)
+                )
             await self._report_error_to_manager(str(e))
         
         finally:
+            # Emit completion/idle event
+            if HAS_EVENT_BUS and event_bus:
+                await event_bus.update_status(
+                    self.agent_name,
+                    AgentState.IDLE,
+                    message="Ready"
+                )
             self.current_task = None
             await self._update_status(AgentStatus.IDLE)
     
@@ -303,12 +373,48 @@ class BaseAgent(ABC):
     
     async def stream_to_frontend(self, content: str, chunk_index: int):
         """Stream content to frontend (for planning/thinking agents)"""
+        # Use EventBus for real-time streaming
+        if HAS_EVENT_BUS and event_bus:
+            task_id = self.current_task.task_id if self.current_task else None
+            await event_bus.emit(
+                EventType.THINKING,
+                self.agent_name,
+                {"content": content, "chunk_index": chunk_index},
+                task_id=task_id
+            )
+        
+        # Also use legacy method
         message = MessageProtocol.create_stream_chunk(
             self.agent_name, 
             content, 
             chunk_index
         )
         await self.ws_manager.send_agent_message_to_clients(message)
+    
+    async def emit_thinking(self, thought: str, step: int = None):
+        """Emit a thinking event for real-time display"""
+        if HAS_EVENT_BUS and event_bus:
+            task_id = self.current_task.task_id if self.current_task else None
+            await event_bus.emit_thinking(self.agent_name, thought, step, task_id)
+    
+    async def emit_progress(self, progress: float, step: str = None, message: str = None):
+        """Emit progress update"""
+        if HAS_EVENT_BUS and event_bus:
+            task_id = self.current_task.task_id if self.current_task else None
+            await event_bus.emit(
+                EventType.TASK_PROGRESS,
+                self.agent_name,
+                {"progress": progress, "step": step, "message": message},
+                task_id=task_id
+            )
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.WORKING,
+                task_id=task_id,
+                step=step,
+                progress=progress,
+                message=message
+            )
     
     async def _update_status(self, status: AgentStatus, reason: str = None):
         """Update agent status"""
@@ -318,6 +424,23 @@ class BaseAgent(ABC):
     async def _report_task_complete(self, result: Any):
         """Report task completion"""
         task_id = self.current_task.task_id if self.current_task else None
+        
+        # Emit completion event via EventBus
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.emit(
+                EventType.TASK_COMPLETED,
+                self.agent_name,
+                {"result_summary": str(result)[:200] if result else ""},
+                task_id=task_id
+            )
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.IDLE,
+                task_id=task_id,
+                progress=100.0,
+                message="Completed"
+            )
+        
         message = MessageProtocol.create_agent_completed(self.agent_name, result, task_id)
         
         # Send to manager

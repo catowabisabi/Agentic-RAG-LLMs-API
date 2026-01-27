@@ -104,7 +104,7 @@ Respond with your decision."""
         chain = prompt | self.llm.with_structured_output(RAGDecision)
         
         try:
-            decision = chain.invoke({"query": query})
+            decision = await chain.ainvoke({"query": query})
             
             result = {
                 "should_use_rag": decision.should_use_rag,

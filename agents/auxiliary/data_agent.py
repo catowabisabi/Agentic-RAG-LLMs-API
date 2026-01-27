@@ -100,7 +100,7 @@ Provide the transformed data in a structured format."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "data": json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data),
             "transformation": transformation
         })
@@ -177,7 +177,7 @@ Return a JSON object with the extracted fields."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "data": str(data),
             "fields": ", ".join(fields) if fields else "all relevant fields"
         })
@@ -223,7 +223,7 @@ Return only the converted data in {target_format} format."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "data": str(data),
             "source_format": source_format,
             "target_format": target_format
@@ -295,7 +295,7 @@ Provide the processed result."""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "data": str(data),
             "instructions": instructions
         })

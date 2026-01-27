@@ -119,7 +119,7 @@ Translation:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "text": text,
             "target_language": target_language,
             "source_instruction": source_instruction,
@@ -159,7 +159,7 @@ Language:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({"text": text[:500]})  # Limit text for detection
+        result = await chain.ainvoke({"text": text[:500]})  # Limit text for detection
         
         language = result.content.strip()
         
@@ -195,7 +195,7 @@ Translation:"""
             
             chain = prompt | self.llm
             
-            result = chain.invoke({
+            result = await chain.ainvoke({
                 "text": text,
                 "target_language": lang
             })
@@ -232,7 +232,7 @@ Localized version:"""
         
         chain = prompt | self.llm
         
-        result = chain.invoke({
+        result = await chain.ainvoke({
             "text": text,
             "target_locale": target_locale,
             "context": context

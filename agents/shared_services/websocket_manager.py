@@ -4,6 +4,8 @@ WebSocket Manager for Multi-Agent Communication
 Manages WebSocket connections for real-time communication between:
 - Agents (internal communication)
 - Frontend clients (external communication)
+
+Integrated with EventBus for real-time event broadcasting.
 """
 
 import asyncio
@@ -15,6 +17,14 @@ from fastapi import WebSocket
 from collections import defaultdict
 
 from .message_protocol import AgentMessage, MessageType, AgentStatus
+
+# Import EventBus for integration
+try:
+    from services.event_bus import event_bus, EventType, AgentState
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    event_bus = None
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +101,12 @@ class WebSocketManager:
         # Subscription management: topic -> set of connection_ids
         self.subscriptions: Dict[str, Set[str]] = defaultdict(set)
         
+        # Session subscriptions: session_id -> set of client_ids
+        self.session_subscriptions: Dict[str, Set[str]] = defaultdict(set)
+        
+        # Client to sessions mapping: client_id -> set of session_ids
+        self.client_sessions: Dict[str, Set[str]] = defaultdict(set)
+        
         # Message handlers
         self.message_handlers: Dict[MessageType, List[Callable]] = defaultdict(list)
         
@@ -100,7 +116,21 @@ class WebSocketManager:
         # Lock for thread safety
         self._lock = asyncio.Lock()
         
+        # Integrate with EventBus
+        if HAS_EVENT_BUS and event_bus:
+            event_bus.set_broadcast_function(self.broadcast_to_clients)
+            asyncio.create_task(self._start_event_bus())
+        
         logger.info("WebSocketManager initialized")
+    
+    async def _start_event_bus(self):
+        """Start the event bus in background"""
+        try:
+            await asyncio.sleep(0.1)  # Small delay to let initialization complete
+            await event_bus.start()
+            logger.info("EventBus started from WebSocketManager")
+        except Exception as e:
+            logger.error(f"Failed to start EventBus: {e}")
     
     # ============== Connection Management ==============
     
@@ -133,7 +163,48 @@ class WebSocketManager:
                 for topic, subscribers in self.subscriptions.items():
                     subscribers.discard(client_id)
                 
+                # Remove from session subscriptions
+                if client_id in self.client_sessions:
+                    for session_id in self.client_sessions[client_id]:
+                        if session_id in self.session_subscriptions:
+                            self.session_subscriptions[session_id].discard(client_id)
+                    del self.client_sessions[client_id]
+                
                 logger.info(f"Client disconnected: {client_id}")
+    
+    def subscribe_session(self, client_id: str, session_id: str):
+        """Subscribe a client to updates for a specific session"""
+        self.session_subscriptions[session_id].add(client_id)
+        self.client_sessions[client_id].add(session_id)
+        logger.info(f"Client {client_id} subscribed to session {session_id}")
+    
+    def unsubscribe_session(self, client_id: str, session_id: str):
+        """Unsubscribe a client from session updates"""
+        if session_id in self.session_subscriptions:
+            self.session_subscriptions[session_id].discard(client_id)
+        if client_id in self.client_sessions:
+            self.client_sessions[client_id].discard(session_id)
+    
+    async def broadcast_to_session(self, session_id: str, data: Dict[str, Any]):
+        """Broadcast a message to all clients subscribed to a session"""
+        if session_id not in self.session_subscriptions:
+            return
+        
+        # Add session_id to the data
+        data["session_id"] = session_id
+        
+        disconnected = []
+        for client_id in self.session_subscriptions[session_id]:
+            if client_id in self.client_connections:
+                try:
+                    await self.client_connections[client_id].send_json(data)
+                except Exception as e:
+                    logger.error(f"Error sending to session subscriber {client_id}: {e}")
+                    disconnected.append(client_id)
+        
+        # Clean up
+        for client_id in disconnected:
+            await self.disconnect_client(client_id)
     
     async def register_agent(self, agent_name: str, websocket: WebSocket = None) -> asyncio.Queue:
         """
@@ -209,8 +280,15 @@ class WebSocketManager:
         logger.debug(f"Message broadcast to {len(self.agent_queues) - len(exclude)} agents")
     
     async def broadcast_to_clients(self, data: Dict[str, Any]):
-        """Broadcast a message to all connected frontend clients"""
+        """
+        Broadcast a message to all connected frontend clients.
+        
+        If the data contains a session_id, also ensures session subscribers get it.
+        """
         disconnected = []
+        
+        # Check if this is a session-specific message
+        session_id = data.get("session_id")
         
         for client_id, connection in self.client_connections.items():
             try:
@@ -222,6 +300,10 @@ class WebSocketManager:
         # Clean up disconnected clients
         for client_id in disconnected:
             await self.disconnect_client(client_id)
+        
+        # Log session-specific broadcasts
+        if session_id:
+            logger.debug(f"Broadcast to session {session_id}: {data.get('type')}")
     
     async def broadcast_agent_activity(self, activity: Dict[str, Any]):
         """
