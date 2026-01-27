@@ -43,6 +43,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class QueryClassification(BaseModel):
+    """Classification of user query for routing"""
+    query_type: str = Field(
+        description="Type of query: 'casual_chat' (greetings, chitchat), 'simple_rag' (direct knowledge query), 'complex_planning' (multi-step reasoning needed)"
+    )
+    reasoning: str = Field(description="Brief explanation for this classification")
+    confidence: float = Field(default=0.8, description="Confidence in classification (0-1)")
+
+
 class TaskRoutingDecision(BaseModel):
     """Decision for routing a task to an agent"""
     target_agent: str = Field(description="Name of the agent to handle the task")
@@ -87,6 +96,7 @@ class ManagerAgent(BaseAgent):
         
         # Available agents for routing
         self.available_agents = [
+            "casual_chat_agent",
             "rag_agent",
             "memory_agent", 
             "notes_agent",
@@ -138,24 +148,290 @@ class ManagerAgent(BaseAgent):
         Process a task - for manager, this means routing it appropriately.
         
         For user_query tasks, this orchestrates the full multi-agent workflow:
-        1. Planning agent creates execution plan
-        2. RAG agent retrieves relevant context (if needed)
-        3. Thinking agent processes with context
-        4. Validation agent checks quality
-        5. Returns synthesized response
+        1. Classify query type (casual_chat, simple_rag, complex_planning)
+        2. Route to appropriate workflow
+        3. Return response
         """
         if task.task_type == "user_query":
             return await self._handle_user_query(task)
         else:
             return await self._route_task(task)
     
+    async def _classify_query(self, query: str, task_id: str) -> QueryClassification:
+        """
+        Classify a user query to determine the appropriate workflow.
+        
+        Returns:
+            QueryClassification with query_type: casual_chat, simple_rag, or complex_planning
+        """
+        # Fast path: check for obvious casual messages using heuristics
+        from agents.core.casual_chat_agent import CasualChatAgent
+        if CasualChatAgent.is_casual_message(query):
+            return QueryClassification(
+                query_type="casual_chat",
+                reasoning="Message matches casual conversation pattern",
+                confidence=0.95
+            )
+        
+        # Use LLM for classification
+        classification_prompt = ChatPromptTemplate.from_template(
+            """Classify this user query into one of three categories:
+
+1. casual_chat: Greetings, small talk, thanks, farewells, simple questions about the AI itself
+   Examples: "Hello", "How are you?", "Thanks!", "What's your name?", "Goodbye"
+
+2. simple_rag: Direct knowledge questions that can be answered with a single database lookup
+   Examples: "What is X?", "How does Y work?", "Explain Z", "Tell me about..."
+
+3. complex_planning: Multi-step queries requiring planning, comparison, analysis, or combining multiple sources
+   Examples: "Compare X and Y", "What are the steps to...", "Analyze...", "Create a plan for..."
+
+User query: "{query}"
+
+Respond with ONLY the category name (casual_chat, simple_rag, or complex_planning) and a brief reason.
+Format: category|reason"""
+        )
+        
+        try:
+            chain = classification_prompt | self.llm
+            result = await chain.ainvoke({"query": query})
+            response = result.content if hasattr(result, 'content') else str(result)
+            
+            # Parse response
+            parts = response.strip().split("|", 1)
+            query_type = parts[0].strip().lower()
+            reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
+            
+            # Validate query_type
+            if query_type not in ["casual_chat", "simple_rag", "complex_planning"]:
+                query_type = "simple_rag"  # Default fallback
+                
+            return QueryClassification(
+                query_type=query_type,
+                reasoning=reasoning,
+                confidence=0.85
+            )
+        except Exception as e:
+            logger.warning(f"[Manager] Classification failed: {e}, defaulting to simple_rag")
+            return QueryClassification(
+                query_type="simple_rag",
+                reasoning=f"Classification error, using default: {e}",
+                confidence=0.5
+            )
+    
+    async def _handle_casual_chat(self, task: TaskAssignment) -> Dict[str, Any]:
+        """Handle a casual chat message via the casual_chat_agent"""
+        from agents.core.casual_chat_agent import get_casual_chat_agent
+        
+        task_id = task.task_id
+        query = task.input_data.get("query", task.description)
+        
+        logger.info(f"[Manager] Routing to casual_chat_agent: {query[:30]}...")
+        
+        # Emit routing event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.emit(
+                EventType.TASK_ASSIGNED,
+                "casual_chat_agent",
+                {"task": "casual_response", "query": query[:50]},
+                task_id=task_id
+            )
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "casual_chat_agent",
+            "source": self.agent_name,
+            "target": "casual_chat_agent",
+            "content": {"task": "casual_response"},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        # Get casual chat agent and process
+        casual_agent = get_casual_chat_agent()
+        result = await casual_agent.process_task(task)
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_completed",
+            "agent": "casual_chat_agent",
+            "source": "casual_chat_agent",
+            "target": self.agent_name,
+            "content": {"workflow": "casual_chat"},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        # Manager wraps the response
+        result["agents_involved"] = ["manager_agent", "casual_chat_agent"]
+        return result
+    
     async def _handle_user_query(self, task: TaskAssignment) -> Dict[str, Any]:
         """
-        Handle a user query through multi-agent collaboration.
-        This is the REAL multi-agent workflow with actual waiting times.
-        Now with EventBus integration for real-time updates.
+        Handle a user query through smart routing.
+        
+        Workflow:
+        1. Classify query (casual, simple_rag, complex)
+        2. Route to appropriate handler
+        3. Return response via manager
         """
         logger.info(f"[Manager] Handling user query: {task.description[:50]}...")
+        
+        query = task.input_data.get("query", task.description)
+        use_rag = task.input_data.get("use_rag", True)
+        task_id = task.task_id
+        
+        # Emit start event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.WORKING,
+                task_id=task_id,
+                message=f"Classifying query..."
+            )
+        
+        # Step 1: Classify the query
+        classification = await self._classify_query(query, task_id)
+        logger.info(f"[Manager] Query classified as: {classification.query_type} ({classification.reasoning})")
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "thinking",
+            "agent": self.agent_name,
+            "source": self.agent_name,
+            "content": {
+                "status": f"Query type: {classification.query_type}",
+                "reasoning": classification.reasoning
+            },
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        # Step 2: Route based on classification
+        if classification.query_type == "casual_chat":
+            return await self._handle_casual_chat(task)
+        elif classification.query_type == "simple_rag":
+            return await self._handle_simple_rag_query(task)
+        else:  # complex_planning
+            return await self._handle_complex_query(task)
+    
+    async def _handle_simple_rag_query(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Handle a simple RAG query - just retrieval + direct response.
+        No planning or deep thinking needed.
+        """
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        
+        agents_involved = ["manager_agent"]
+        sources = []
+        rag_context = ""
+        
+        # Emit start event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.WORKING,
+                task_id=task_id,
+                message=f"Simple RAG query..."
+            )
+        
+        # Get RAG context
+        logger.info("[Manager] → RAG Agent: Querying knowledge bases...")
+        
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                "rag_agent",
+                AgentState.QUERYING_RAG,
+                task_id=task_id,
+                message="Searching knowledge bases..."
+            )
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "rag_agent",
+            "source": self.agent_name,
+            "target": "rag_agent",
+            "content": {"task": "retrieve_context", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        agents_involved.append("rag_agent")
+        
+        # Execute RAG query
+        rag_agent = self.registry.get_agent("rag_agent")
+        if rag_agent:
+            rag_task = TaskAssignment(
+                task_id=task_id,
+                task_type="query_knowledge",
+                description=query,
+                input_data={"query": query}
+            )
+            rag_result = await rag_agent.process_task(rag_task)
+            
+            if isinstance(rag_result, dict):
+                rag_context = rag_result.get("context", "")
+                sources = rag_result.get("sources", [])
+            
+            if HAS_EVENT_BUS and event_bus:
+                await event_bus.update_status("rag_agent", AgentState.IDLE, message="Ready")
+        
+        # Generate response with RAG context
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.CALLING_LLM,
+                task_id=task_id,
+                message="Generating response..."
+            )
+        
+        # Check if we found relevant context
+        if rag_context and len(rag_context) > 100:
+            # We have context - generate response using it
+            prompt = ChatPromptTemplate.from_template(
+                """Based on the following knowledge base context, answer the user's question.
+Be concise and direct.
+
+=== Knowledge Base Context ===
+{rag_context}
+=== End Context ===
+
+User Question: {query}
+
+Answer:"""
+            )
+            chain = prompt | self.llm
+            result = await chain.ainvoke({"rag_context": rag_context[:4000], "query": query})
+            response_text = result.content if hasattr(result, 'content') else str(result)
+        else:
+            # No relevant context found - inform user
+            response_text = f"I searched the knowledge bases but couldn't find specific information about that topic. Could you rephrase your question or ask about a different topic?"
+            if sources:
+                response_text += f"\n\n(Searched {len(sources)} documents but relevance was low)"
+        
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(self.agent_name, AgentState.IDLE, message="Ready")
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_completed",
+            "agent": self.agent_name,
+            "source": self.agent_name,
+            "content": {"workflow": "simple_rag", "sources_count": len(sources)},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": sources,
+            "workflow": "simple_rag"
+        }
+    
+    async def _handle_complex_query(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Handle a complex query that requires planning and multi-step reasoning.
+        This is the original full workflow.
+        """
+        logger.info(f"[Manager] Complex query - full planning workflow")
         
         query = task.input_data.get("query", task.description)
         use_rag = task.input_data.get("use_rag", True)

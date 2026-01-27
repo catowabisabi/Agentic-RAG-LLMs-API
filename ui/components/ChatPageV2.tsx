@@ -147,7 +147,36 @@ const formatThinkingContent = (content: any): string => {
   if (content.sources_count !== undefined) return `Found ${content.sources_count} sources`;
   if (content.response_length) return `Generated ${content.response_length} char response`;
   if (content.message) return content.message;
-  return JSON.stringify(content);
+  if (content.workflow) return `Workflow: ${content.workflow}`;
+  if (content.reasoning) return content.reasoning;
+  // Skip verbose data
+  if (typeof content === 'object') {
+    const keys = Object.keys(content);
+    if (keys.length === 0) return '';
+    // Just show first meaningful value
+    for (const key of ['status', 'message', 'task', 'workflow', 'query']) {
+      if (content[key]) return String(content[key]);
+    }
+  }
+  return '';
+};
+
+// Helper to summarize agent statuses
+const getAgentSummary = (statuses: Record<string, AgentStatus>): { active: string[], idle: number, total: number } => {
+  const active: string[] = [];
+  let idle = 0;
+  const entries = Object.entries(statuses);
+  
+  for (const [name, status] of entries) {
+    const state = status.state?.toLowerCase() || 'idle';
+    if (['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(state)) {
+      active.push(name.replace('_agent', ''));
+    } else {
+      idle++;
+    }
+  }
+  
+  return { active, idle, total: entries.length };
 };
 
 // ============== Main Component ==============
@@ -170,6 +199,7 @@ export default function ChatPageV2() {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [pendingInfo, setPendingInfo] = useState<string | null>(null);
   const [isInterrupting, setIsInterrupting] = useState(false);
+  const [lastStatusUpdate, setLastStatusUpdate] = useState<string>('');
   
   // WebSocket state
   const [wsConnected, setWsConnected] = useState(false);
@@ -178,6 +208,7 @@ export default function ChatPageV2() {
   // UI state
   const [isHydrated, setIsHydrated] = useState(false);
   const [showTaskPanel, setShowTaskPanel] = useState(true);
+  const [showThinking, setShowThinking] = useState(true);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -189,9 +220,9 @@ export default function ChatPageV2() {
   const messages = activeSession?.messages || [];
   const runningTasks = activeSession?.runningTasks || [];
   
-  const hasWorkingAgents = Object.values(agentStatuses).some(
-    a => ['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(a.state?.toLowerCase())
-  );
+  // Computed values
+  const agentSummary = getAgentSummary(agentStatuses);
+  const hasWorkingAgents = agentSummary.active.length > 0;
 
   // ============== WebSocket Connection ==============
 
@@ -246,9 +277,28 @@ export default function ChatPageV2() {
   }, []);
 
   const handleWebSocketMessage = useCallback((data: any) => {
-    // Handle heartbeat with agent statuses
+    // Handle heartbeat with agent statuses - update quietly without re-rendering unless active agents change
     if (data.type === 'heartbeat' && data.agent_statuses) {
-      setAgentStatuses(data.agent_statuses);
+      const newSummary = getAgentSummary(data.agent_statuses);
+      // Only update if active agents changed
+      if (JSON.stringify(newSummary.active) !== JSON.stringify(agentSummary.active)) {
+        setAgentStatuses(data.agent_statuses);
+        setLastStatusUpdate(new Date().toLocaleTimeString());
+      }
+      return;
+    }
+    
+    // Handle agent_statuses message (alternative format)
+    if (data.type === 'agent_statuses' && data.statuses) {
+      const formatted: Record<string, AgentStatus> = {};
+      for (const [name, state] of Object.entries(data.statuses)) {
+        formatted[name] = { name, state: state as string };
+      }
+      const newSummary = getAgentSummary(formatted);
+      if (JSON.stringify(newSummary.active) !== JSON.stringify(agentSummary.active)) {
+        setAgentStatuses(formatted);
+        setLastStatusUpdate(new Date().toLocaleTimeString());
+      }
       return;
     }
     
@@ -259,38 +309,50 @@ export default function ChatPageV2() {
       return;
     }
     
+    // Handle connected message - just log
+    if (data.type === 'connected') {
+      console.log('[ChatV2] Connected:', data.client_id);
+      return;
+    }
+    
     // Handle session state response (from WebSocket)
     if (data.type === 'session_state') {
       handleSessionStateUpdate(data.state);
       return;
     }
     
-    // Handle agent status changes
+    // Handle agent status changes - only for active changes
     if (data.type === 'agent_status_changed') {
-      setAgentStatuses(prev => ({
-        ...prev,
-        [data.agent_name]: {
-          name: data.agent_name,
-          state: data.state,
-          message: data.message,
-          progress: data.progress,
-          task_id: data.task_id
-        }
-      }));
+      const state = data.state?.toLowerCase();
+      // Only update UI if becoming active or completing
+      if (['working', 'thinking', 'calling_llm', 'querying_rag', 'processing', 'idle', 'error'].includes(state)) {
+        setAgentStatuses(prev => ({
+          ...prev,
+          [data.agent_name]: {
+            name: data.agent_name,
+            state: data.state,
+            message: data.message,
+            progress: data.progress,
+            task_id: data.task_id
+          }
+        }));
+        setLastStatusUpdate(new Date().toLocaleTimeString());
+      }
+      return;
     }
     
     // Filter messages by session_id if present
     if (data.session_id && data.session_id !== activeSessionId) {
-      // Message is for a different session, update that session's state in background
       return;
     }
     
-    // Capture thinking/plan steps for the active session
-    if (data.type === 'thinking' || data.type === 'plan_step' || 
-        data.type === 'agent_started' || data.type === 'task_assigned' ||
-        data.type === 'rag_query' || data.type === 'rag_result' ||
-        data.type === 'llm_call_start' || data.type === 'task_completed' ||
-        data.type === 'agent_step') {
+    // Capture only important thinking/plan steps (not every status update)
+    if (data.type === 'thinking' || data.type === 'task_assigned' || 
+        data.type === 'task_completed' || data.type === 'agent_step') {
+      const content = formatThinkingContent(data.data || data.content || data);
+      // Skip empty or redundant content
+      if (!content || content.length < 3) return;
+      
       const step: ThinkingStep = {
         step_type: data.type.toUpperCase(),
         agent_name: data.agent_name || data.agent || data.source || 'system',
@@ -306,16 +368,15 @@ export default function ChatPageV2() {
           s.agent_name === step.agent_name
         );
         if (isDupe) return prev;
-        return [...prev, step].slice(-50);
+        return [...prev, step].slice(-30);
       });
     }
     
     // Handle task completion - update session state
     if (data.type === 'task_completed' && data.session_id === activeSessionId && activeSessionId) {
-      // Trigger a session state refresh
       refreshSessionState(activeSessionId);
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, agentSummary.active]);
 
   const subscribeToSession = useCallback((sessionId: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -391,8 +452,18 @@ export default function ChatPageV2() {
       handleSessionStateUpdate(response.data);
     } catch (e: any) {
       if (e.response?.status === 404) {
-        // Session doesn't exist in database yet - that's ok, it's a new session
+        // Session doesn't exist in database yet - mark as loaded with default title
         console.log('[ChatV2] Session not in database yet:', sessionId);
+        setSessions(prev => prev.map(s => {
+          if (s.id === sessionId) {
+            return {
+              ...s,
+              title: s.title === 'Loading...' ? 'New Chat' : s.title,
+              isLoaded: true
+            };
+          }
+          return s;
+        }));
       } else {
         console.error('[ChatV2] Failed to load session:', e);
       }
@@ -802,6 +873,31 @@ export default function ChatPageV2() {
 
           {/* Status indicators */}
           <div className="flex-shrink-0 ml-auto flex items-center gap-2">
+            {/* Agent Summary - compact display */}
+            <div className="flex items-center gap-1 px-2 py-1 bg-gray-700 rounded text-xs">
+              {agentSummary.active.length > 0 ? (
+                <>
+                  <Zap className="w-3 h-3 text-yellow-400 animate-pulse" />
+                  <span className="text-yellow-400">{agentSummary.active.join(', ')}</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-gray-400">Idle {agentSummary.idle}/{agentSummary.total}</span>
+                </>
+              )}
+            </div>
+            
+            {/* Thinking toggle */}
+            <button
+              onClick={() => setShowThinking(!showThinking)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${
+                showThinking ? 'bg-purple-900/50 text-purple-400' : 'bg-gray-700 text-gray-400'
+              }`}
+            >
+              <Brain className="w-3 h-3" />
+              Think
+            </button>
+            
             {/* Task panel toggle */}
             <button
               onClick={() => setShowTaskPanel(!showTaskPanel)}
@@ -812,14 +908,6 @@ export default function ChatPageV2() {
               <List className="w-3 h-3" />
               Tasks
             </button>
-            
-            {/* Session subscription status */}
-            {subscribedSession === activeSessionId && (
-              <div className="flex items-center gap-1 px-2 py-1 bg-purple-900/50 text-purple-400 rounded text-xs">
-                <Activity className="w-3 h-3" />
-                Synced
-              </div>
-            )}
             
             {/* WebSocket Status */}
             <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${wsConnected ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
@@ -900,8 +988,12 @@ export default function ChatPageV2() {
                       <div className="bg-gray-700 rounded-xl px-4 py-3 flex items-center gap-3">
                         <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
                         <div className="flex flex-col flex-1">
-                          <span className="text-white text-sm">Agents are working...</span>
-                          <span className="text-gray-400 text-xs">{pendingInfo || 'Processing your request'}</span>
+                          <span className="text-white text-sm">
+                            {agentSummary.active.length > 0 
+                              ? `Active: ${agentSummary.active.join(' → ')}`
+                              : 'Processing...'}
+                          </span>
+                          <span className="text-gray-400 text-xs">{pendingInfo || 'Please wait'}</span>
                         </div>
                         {currentTaskId && (
                           <button
@@ -916,24 +1008,21 @@ export default function ChatPageV2() {
                       </div>
                     </div>
                     
-                    {/* Live thinking steps */}
-                    {thinkingSteps.length > 0 && (
-                      <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg">
-                        <div className="flex items-center justify-between text-xs text-purple-400 mb-2">
-                          <div className="flex items-center gap-2">
-                            <Brain className="w-3 h-3 animate-pulse" />
-                            <span>Live Chain of Thought</span>
-                          </div>
-                          <span className="text-gray-500">{thinkingSteps.length} steps</span>
-                        </div>
-                        <div className="space-y-1 max-h-48 overflow-y-auto">
-                          {thinkingSteps.slice(-15).map((step, i) => (
-                            <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
-                              <span>{getStepIcon(step.step_type)}</span>
-                              <span className="text-purple-400 flex-shrink-0">[{step.agent_name}]</span>
-                              <span className="flex-1">{formatThinkingContent(step.content)}</span>
-                            </div>
-                          ))}
+                    {/* Live thinking steps - only show if toggle is on */}
+                    {showThinking && thinkingSteps.length > 0 && (
+                      <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg max-h-48 overflow-y-auto">
+                        <div className="space-y-1">
+                          {thinkingSteps.slice(-10).map((step, i) => {
+                            const content = formatThinkingContent(step.content);
+                            if (!content) return null;
+                            return (
+                              <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
+                                <span>{getStepIcon(step.step_type)}</span>
+                                <span className="text-purple-400 flex-shrink-0">{step.agent_name.replace('_agent', '')}</span>
+                                <span className="flex-1 truncate">{content}</span>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -1014,64 +1103,51 @@ export default function ChatPageV2() {
                       <div key={task.task_uid} className="p-2 bg-yellow-900/20 border border-yellow-800/50 rounded text-xs">
                         <div className="flex items-center gap-2">
                           {getAgentStateIcon(task.status)}
-                          <span className="text-white font-medium">{task.agent_name}</span>
+                          <span className="text-white font-medium">{task.agent_name.replace('_agent', '')}</span>
                         </div>
                         <div className="text-gray-400 mt-1 truncate">{task.task_type}</div>
-                        <div className="text-gray-500 mt-1">#{task.task_uid.slice(-8)}</div>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
               
-              {/* Agent Statuses */}
+              {/* Active Agents - compact list */}
               {hasWorkingAgents && (
                 <div>
                   <h4 className="text-xs text-blue-400 mb-2 flex items-center gap-1">
                     <Activity className="w-3 h-3" />
-                    Active Agents
+                    Active ({agentSummary.active.length})
                   </h4>
-                  <div className="space-y-1">
-                    {Object.values(agentStatuses)
-                      .filter(a => ['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(a.state?.toLowerCase()))
-                      .map((agent, i) => (
-                        <div key={i} className="flex items-center gap-2 p-2 bg-gray-800/50 rounded text-xs">
-                          {getAgentStateIcon(agent.state)}
-                          <span className="text-white">{agent.name}</span>
-                          <span className="text-gray-500 truncate">{agent.message}</span>
-                        </div>
-                      ))}
+                  <div className="flex flex-wrap gap-1">
+                    {agentSummary.active.map((name, i) => (
+                      <span key={i} className="px-2 py-1 bg-blue-900/30 text-blue-300 rounded text-xs">
+                        {name}
+                      </span>
+                    ))}
                   </div>
+                  {lastStatusUpdate && (
+                    <div className="text-gray-500 text-xs mt-2">Updated: {lastStatusUpdate}</div>
+                  )}
                 </div>
               )}
               
-              {/* Session Stats */}
+              {/* Session Stats - compact */}
               <div>
-                <h4 className="text-xs text-gray-400 mb-2">Session Stats</h4>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 bg-gray-800 rounded">
-                    <div className="text-gray-500">Total</div>
-                    <div className="text-white font-medium">{activeSession.taskStats.total}</div>
-                  </div>
-                  <div className="p-2 bg-green-900/30 rounded">
-                    <div className="text-green-400">Completed</div>
-                    <div className="text-white font-medium">{activeSession.taskStats.completed}</div>
-                  </div>
-                  <div className="p-2 bg-yellow-900/30 rounded">
-                    <div className="text-yellow-400">Running</div>
-                    <div className="text-white font-medium">{activeSession.taskStats.running}</div>
-                  </div>
-                  <div className="p-2 bg-red-900/30 rounded">
-                    <div className="text-red-400">Failed</div>
-                    <div className="text-white font-medium">{activeSession.taskStats.failed}</div>
-                  </div>
+                <h4 className="text-xs text-gray-400 mb-2">Stats</h4>
+                <div className="flex gap-2 text-xs">
+                  <span className="text-green-400">✓{activeSession.taskStats.completed}</span>
+                  <span className="text-yellow-400">⟳{activeSession.taskStats.running}</span>
+                  {activeSession.taskStats.failed > 0 && (
+                    <span className="text-red-400">✗{activeSession.taskStats.failed}</span>
+                  )}
                 </div>
               </div>
               
               {/* No activity message */}
               {runningTasks.length === 0 && !hasWorkingAgents && (
                 <div className="text-center text-gray-500 text-xs py-4">
-                  No active tasks
+                  Ready
                 </div>
               )}
             </div>

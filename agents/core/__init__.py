@@ -7,6 +7,7 @@ from .validation_agent import ValidationAgent
 from .planning_agent import PlanningAgent
 from .thinking_agent import ThinkingAgent
 from .roles_agent import RolesAgent
+from .casual_chat_agent import CasualChatAgent
 
 __all__ = [
     'ManagerAgent',
@@ -16,5 +17,6 @@ __all__ = [
     'ValidationAgent',
     'PlanningAgent',
     'ThinkingAgent',
-    'RolesAgent'
+    'RolesAgent',
+    'CasualChatAgent'
 ]

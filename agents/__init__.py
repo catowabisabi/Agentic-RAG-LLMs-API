@@ -21,7 +21,8 @@ from agents.core import (
     ValidationAgent,
     PlanningAgent,
     ThinkingAgent,
-    RolesAgent
+    RolesAgent,
+    CasualChatAgent
 )
 
 from agents.auxiliary import (
@@ -50,6 +51,7 @@ __all__ = [
     "PlanningAgent",
     "ThinkingAgent",
     "RolesAgent",
+    "CasualChatAgent",
     
     # Auxiliary agents
     "DataAgent",
