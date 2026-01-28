@@ -5,6 +5,7 @@ Executes external tools and APIs:
 - Tool discovery and selection
 - Tool execution
 - Result processing
+- MCP integrations (File Control, System Commands, Medical RAG)
 """
 
 import asyncio
@@ -103,6 +104,53 @@ class ToolAgent(BaseAgent):
             parameters={"text": "string"},
             handler=self._text_analyzer_handler
         )
+        
+        # Register MCP tools
+        self._register_mcp_tools()
+    
+    def _register_mcp_tools(self):
+        """Register MCP-based tools (File Control, System Commands, Medical RAG)"""
+        
+        # File Control Tool
+        self.register_tool(
+            name="file_control",
+            description="Read/write files: txt, json, csv, excel, pdf. Use for file operations.",
+            parameters={
+                "operation": "read_txt|write_txt|read_json|write_json|read_csv|read_excel|read_pdf|list_files",
+                "file_path": "string",
+                "content": "string (for write operations)",
+                "encoding": "string (default: utf-8)"
+            },
+            handler=self._file_control_handler,
+            is_async=True
+        )
+        
+        # System Commands Tool
+        self.register_tool(
+            name="system_command",
+            description="Execute safe system commands (echo, ls, dir, pwd, cat, grep, python, pip, git, etc.)",
+            parameters={
+                "command": "string",
+                "timeout": "int (default: 30)"
+            },
+            handler=self._system_command_handler,
+            is_async=True
+        )
+        
+        # Medical RAG Tool
+        self.register_tool(
+            name="medical_rag",
+            description="Search PubMed and medical regulations. Use for medical/health queries.",
+            parameters={
+                "operation": "search_pubmed|get_article|search_regulations",
+                "query": "string",
+                "max_results": "int (default: 5)"
+            },
+            handler=self._medical_rag_handler,
+            is_async=True
+        )
+        
+        logger.info("MCP tools registered: file_control, system_command, medical_rag")
     
     def register_tool(
         self,
@@ -347,3 +395,95 @@ Return only valid JSON with the parameter values."""
             "line_count": len(lines),
             "average_word_length": sum(len(w) for w in words) / len(words) if words else 0
         }
+    
+    # MCP Tool Handlers
+    
+    async def _file_control_handler(
+        self,
+        operation: str,
+        file_path: str = "",
+        content: str = "",
+        encoding: str = "utf-8"
+    ) -> Dict[str, Any]:
+        """Handle file control operations via MCP"""
+        try:
+            from mcp.providers.file_control_provider import FileControlProvider, FileControlConfig
+            
+            config = FileControlConfig()
+            provider = FileControlProvider(config)
+            await provider.initialize()
+            
+            if operation == "read_txt":
+                result = await provider.read_txt(file_path, encoding)
+            elif operation == "write_txt":
+                result = await provider.write_txt(file_path, content, encoding)
+            elif operation == "read_json":
+                result = await provider.read_json(file_path)
+            elif operation == "write_json":
+                result = await provider.write_json(file_path, json.loads(content))
+            elif operation == "read_csv":
+                result = await provider.read_csv(file_path)
+            elif operation == "read_excel":
+                result = await provider.read_excel(file_path)
+            elif operation == "read_pdf":
+                result = await provider.read_pdf(file_path)
+            elif operation == "list_files":
+                result = await provider.list_files(file_path)
+            else:
+                return {"success": False, "error": f"Unknown operation: {operation}"}
+            
+            return result.model_dump() if hasattr(result, 'model_dump') else result
+            
+        except Exception as e:
+            logger.error(f"File control error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def _system_command_handler(
+        self,
+        command: str,
+        timeout: int = 30
+    ) -> Dict[str, Any]:
+        """Handle system command execution via MCP"""
+        try:
+            from mcp.providers.system_command_provider import SystemCommandProvider, SystemCommandConfig
+            
+            # Disable HITL for agent execution
+            config = SystemCommandConfig(require_confirmation=False)
+            provider = SystemCommandProvider(config)
+            await provider.initialize()
+            
+            result = await provider.execute_command(command, timeout=timeout)
+            return result.model_dump() if hasattr(result, 'model_dump') else result
+            
+        except Exception as e:
+            logger.error(f"System command error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def _medical_rag_handler(
+        self,
+        operation: str,
+        query: str = "",
+        max_results: int = 5
+    ) -> Dict[str, Any]:
+        """Handle medical RAG operations via MCP"""
+        try:
+            from mcp.services.medical_rag_service import MedicalRAGService
+            
+            service = MedicalRAGService()
+            await service.initialize()
+            
+            if operation == "search_pubmed":
+                results = await service.search_pubmed(query, max_results=max_results)
+                return {"success": True, "results": results, "count": len(results)}
+            elif operation == "get_article":
+                result = await service.get_article_details(query)  # query = article_id
+                return {"success": True, "article": result}
+            elif operation == "search_regulations":
+                results = await service.search_regulations(query)
+                return {"success": True, "regulations": results}
+            else:
+                return {"success": False, "error": f"Unknown operation: {operation}"}
+                
+        except Exception as e:
+            logger.error(f"Medical RAG error: {e}")
+            return {"success": False, "error": str(e)}

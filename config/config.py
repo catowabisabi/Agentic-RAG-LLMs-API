@@ -5,10 +5,18 @@ Centralized configuration for the multi-agent RAG system.
 """
 
 import os
+from pathlib import Path
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from config directory
+config_dir = Path(__file__).parent
+env_path = config_dir / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
+else:
+    # Fallback to project root
+    load_dotenv()
 
 
 class Config:

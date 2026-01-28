@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from tools.retriever import DocumentRetriever
-from documents.load_documents import DocumentLoader
+from services.document_loader import DocumentLoader
 from services.vectordb_manager import vectordb_manager
 
 logger = logging.getLogger(__name__)
