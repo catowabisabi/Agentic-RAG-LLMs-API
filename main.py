@@ -191,7 +191,7 @@ async def run_both_servers(config: Config):
 
 def run_interactive_mode(config: Config):
     """Run in interactive CLI mode (legacy support)"""
-    from agents.rag_agent import create_rag_agent
+    from agents.legacy.rag_agent import create_rag_agent
     from tools.retriever import DocumentRetriever
     
     print("🤖 Initializing RAG Agent...")
@@ -313,7 +313,7 @@ Examples:
     # Determine run mode
     if args.query:
         # Single query mode
-        from agents.rag_agent import create_rag_agent
+        from agents.legacy.rag_agent import create_rag_agent
         
         try:
             agent = create_rag_agent()

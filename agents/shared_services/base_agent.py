@@ -1,11 +1,48 @@
+# -*- coding: utf-8 -*-
 """
-Base Agent Class
+=============================================================================
+代理基類 (Base Agent Class)
+=============================================================================
 
-Abstract base class for all agents in the multi-agent system.
-Provides common functionality for WebSocket communication, 
-message handling, and lifecycle management.
+結構說明：
+-----------
+所有代理的抽象基類，提供通用功能：
+- WebSocket 通訊
+- 訊息處理
+- 生命週期管理
+- EventBus 即時狀態更新
 
-Now integrated with EventBus for real-time status updates.
+核心方法：
+-----------
+1. process_task(task)    : [抽象] 處理任務（必須實現）
+2. start()               : 啟動代理
+3. stop()                : 停止代理
+4. send_message(msg)     : 發送訊息給其他代理
+5. broadcast_status()    : 廣播狀態更新
+
+生命週期：
+-----------
+初始化 → start() → process_task() → stop()
+
+繼承使用：
+-----------
+from agents.shared_services.base_agent import BaseAgent
+
+class MyAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_name="my_agent",
+            agent_role="My Role",
+            agent_description="我的代理描述"
+        )
+    
+    async def process_task(self, task: TaskAssignment) -> Dict[str, Any]:
+        # 處理任務邏輯
+        return {"response": "完成"}
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 import asyncio

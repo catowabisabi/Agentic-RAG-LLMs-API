@@ -1,14 +1,47 @@
+# -*- coding: utf-8 -*-
 """
-Background Task Manager
+=============================================================================
+背景任務管理器 (Background Task Manager)
+=============================================================================
 
-Manages asynchronous background tasks that run independently of frontend connections.
-Tasks continue running even if the user leaves the page.
+功能說明：
+-----------
+管理異步背景任務，即使用戶離開頁面也能繼續運行。
 
-Architecture:
-1. User submits task → returns task_id immediately
-2. Task runs in background → updates stored in memory/Redis
-3. User can poll for status or receive WebSocket updates
-4. Results are stored and retrievable anytime
+工作流程：
+-----------
+1. 用戶提交任務 → 立即返回 task_id
+2. 任務在背景運行 → 狀態存儲在內存/Redis
+3. 用戶可以輪詢狀態或接收 WebSocket 更新
+4. 結果被存儲，隨時可檢索
+
+任務狀態 (TaskStatus)：
+-----------
+- PENDING   : 已創建，等待開始
+- RUNNING   : 正在處理
+- COMPLETED : 成功完成
+- FAILED    : 執行失敗
+- CANCELLED : 已取消
+
+使用方式：
+-----------
+from services import task_manager, TaskStatus
+
+# 創建任務
+task_id = task_manager.create_task("chat", {"message": "Hello"})
+
+# 獲取任務狀態
+result = task_manager.get_task(task_id)
+
+# 更新進度
+task_manager.update_progress(task_id, 50, "處理中...", ["manager_agent"])
+
+# 完成任務
+task_manager.complete_task(task_id, result_data)
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 import asyncio

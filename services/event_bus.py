@@ -1,13 +1,22 @@
+# -*- coding: utf-8 -*-
 """
-Event Bus for Real-time Multi-Agent Communication
+=============================================================================
+事件總線 - 即時多代理通訊系統 (Event Bus)
+=============================================================================
 
-This is the central event system that enables:
-- Real-time agent status updates to all frontends
-- Non-blocking event broadcasting
-- Activity logging and history
-- Interrupt signal propagation
+功能說明：
+-----------
+中央事件系統，實現多代理之間的即時通訊和狀態同步。
 
-Architecture:
+核心功能：
+-----------
+1. 即時代理狀態更新廣播到所有前端
+2. 非阻塞事件廣播機制
+3. 活動日誌和歷史記錄
+4. 中斷信號傳播
+
+架構圖：
+-----------
     ┌──────────────────────────────────────────────────────────┐
     │                    Event Bus (Singleton)                  │
     │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐         │
@@ -25,6 +34,36 @@ Architecture:
     ┌────┴────┐        ┌────┴────┐        ┌────┴────┐
     │Dashboard│        │  Chat   │        │  Agents │
     └─────────┘        └─────────┘        └─────────┘
+
+事件類型 (EventType)：
+-----------
+- AGENT_* : 代理生命週期事件
+- TASK_*  : 任務生命週期事件
+- THINKING/PLANNING : 代理思考過程
+- RAG_*   : RAG 查詢和結果
+- LLM_*   : LLM 調用事件
+
+代理狀態 (AgentState)：
+-----------
+- IDLE      : 閒置
+- WORKING   : 工作中
+- THINKING  : 思考中
+- CALLING_LLM : 調用 LLM
+- QUERYING_RAG : 查詢 RAG
+
+使用方式：
+-----------
+from services import event_bus, EventType, AgentState
+
+# 發送事件
+await event_bus.emit(EventType.TASK_COMPLETED, agent_name, data)
+
+# 更新狀態
+await event_bus.update_status(agent_name, AgentState.WORKING)
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 import asyncio

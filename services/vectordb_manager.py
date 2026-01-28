@@ -1,12 +1,46 @@
+# -*- coding: utf-8 -*-
 """
-Vector Database Manager
+=============================================================================
+向量資料庫管理器 (Vector Database Manager)
+=============================================================================
 
-Manages multiple vector databases for different data categories.
-Supports:
-- Creating new vector databases
-- Switching between databases
-- LLM summarization before insertion
-- Full-text document insertion with categorization
+功能說明：
+-----------
+管理多個向量資料庫，用於不同類別的資料存儲和檢索。
+
+核心功能：
+-----------
+1. 創建新的向量資料庫（按類別分類）
+2. 在不同資料庫之間切換
+3. LLM 摘要後插入（可選）
+4. 全文檔插入和分塊處理
+5. 資料庫列表和狀態查詢
+
+技術架構：
+-----------
+- 存儲引擎：ChromaDB（持久化向量存儲）
+- 嵌入模型：OpenAI text-embedding-3-small (1536維)
+- 文本分割：LangChain RecursiveCharacterTextSplitter
+
+使用方式：
+-----------
+from services import vectordb_manager
+
+# 創建資料庫
+await vectordb_manager.create_database("my_docs", "我的文檔庫")
+
+# 添加文檔
+await vectordb_manager.add_document("my_docs", content, metadata)
+
+# 查詢
+results = await vectordb_manager.query("搜尋關鍵字", "my_docs", n_results=5)
+
+# 列出所有資料庫
+databases = vectordb_manager.list_databases()
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 import os

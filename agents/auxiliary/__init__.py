@@ -1,12 +1,24 @@
+# -*- coding: utf-8 -*-
 """
-Auxiliary Agents Package
+=============================================================================
+輔助代理模組 (Auxiliary Agents Module)
+=============================================================================
 
-Contains specialized agents for specific tasks:
-- DataAgent: Data processing and transformation
-- ToolAgent: External tool execution
-- SummarizeAgent: Content summarization
-- TranslateAgent: Language translation
-- CalculationAgent: Mathematical calculations
+結構說明：
+-----------
+專門化的輔助代理，負責特定類型的任務。
+
+代理列表：
+-----------
+- DataAgent        : 資料處理和轉換
+- ToolAgent        : 外部工具執行
+- SummarizeAgent   : 內容摘要生成
+- TranslateAgent   : 語言翻譯
+- CalculationAgent : 數學計算
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 from agents.auxiliary.data_agent import DataAgent

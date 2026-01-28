@@ -1,13 +1,22 @@
+# -*- coding: utf-8 -*-
 """
-Session Database Service
+=============================================================================
+會話資料庫服務 (Session Database Service)
+=============================================================================
 
-Provides persistent storage for:
-- Chat sessions
-- Agent tasks with session binding
-- Task steps and responses
-- Complete interaction history
+功能說明：
+-----------
+提供持久化存儲，用於保存聊天會話、任務和交互歷史。
 
-Architecture:
+核心功能：
+-----------
+1. 聊天會話管理（創建、讀取、更新、刪除）
+2. 代理任務綁定到會話
+3. 任務步驟和回應記錄
+4. 完整交互歷史恢復
+
+資料模型：
+-----------
     ┌─────────────────────────────────────────────────────────────────────┐
     │                         Session Database                              │
     │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
@@ -18,6 +27,32 @@ Architecture:
     │  │  - status    │ │  - status    │ │  - type      │ │  - content   ││
     │  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘│
     └─────────────────────────────────────────────────────────────────────┘
+
+存儲引擎：
+-----------
+- SQLite（rag-database/sessions.db）
+- 線程安全連接池
+- 自動表結構遷移
+
+使用方式：
+-----------
+from services import session_db
+
+# 創建/獲取會話
+session = session_db.get_or_create_session(session_id, title)
+
+# 添加訊息
+session_db.add_message(session_id, "user", content)
+
+# 創建任務
+task = session_db.create_task(session_id, agent_name, task_type, description)
+
+# 獲取會話狀態
+state = session_db.get_session_state(session_id)
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
 """
 
 import sqlite3

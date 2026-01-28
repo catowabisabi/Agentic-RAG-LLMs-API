@@ -1,4 +1,31 @@
-# Core Agents
+# -*- coding: utf-8 -*-
+"""
+=============================================================================
+核心代理模組 (Core Agents Module)
+=============================================================================
+
+結構說明：
+-----------
+系統的核心代理，負責主要任務處理和協調。
+
+代理列表：
+-----------
+- ManagerAgent     : 中央管理器，任務路由和分配
+- RAGAgent         : 檢索增強生成，知識庫查詢
+- PlanningAgent    : 任務規劃和分解
+- ThinkingAgent    : 深度推理和分析
+- MemoryAgent      : 長期記憶管理
+- NotesAgent       : 筆記和上下文存儲
+- ValidationAgent  : 結果驗證和品質檢查
+- RolesAgent       : 角色監控和調整
+- CasualChatAgent  : 簡單對話和問候處理
+
+作者：Agentic RAG Team
+版本：2.0
+=============================================================================
+"""
+
+# 核心代理
 from .manager_agent import ManagerAgent
 from .rag_agent import RAGAgent
 from .memory_agent import MemoryAgent
