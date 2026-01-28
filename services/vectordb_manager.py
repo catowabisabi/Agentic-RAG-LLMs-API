@@ -38,8 +38,7 @@ results = await vectordb_manager.query("搜尋關鍵字", "my_docs", n_results=5
 # 列出所有資料庫
 databases = vectordb_manager.list_databases()
 
-作者：Agentic RAG Team
-版本：2.0
+
 =============================================================================
 """
 
@@ -158,14 +157,14 @@ class VectorDBManager:
     def _load_metadata(self) -> Dict[str, Any]:
         """Load database metadata from file"""
         if self.metadata_file.exists():
-            with open(self.metadata_file, 'r') as f:
+            with open(self.metadata_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {"databases": {}, "active": None}
     
     def _save_metadata(self):
         """Save database metadata to file"""
-        with open(self.metadata_file, 'w') as f:
-            json.dump(self._metadata, f, indent=2, default=str)
+        with open(self.metadata_file, 'w', encoding='utf-8') as f:
+            json.dump(self._metadata, f, indent=2, default=str, ensure_ascii=False)
     
     # ============== Database Management ==============
     

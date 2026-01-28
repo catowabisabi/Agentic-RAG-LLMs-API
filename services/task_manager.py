@@ -39,8 +39,7 @@ task_manager.update_progress(task_id, 50, "處理中...", ["manager_agent"])
 # 完成任務
 task_manager.complete_task(task_id, result_data)
 
-作者：Agentic RAG Team
-版本：2.0
+
 =============================================================================
 """
 

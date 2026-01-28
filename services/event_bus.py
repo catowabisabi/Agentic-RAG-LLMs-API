@@ -61,8 +61,6 @@ await event_bus.emit(EventType.TASK_COMPLETED, agent_name, data)
 # 更新狀態
 await event_bus.update_status(agent_name, AgentState.WORKING)
 
-作者：Agentic RAG Team
-版本：2.0
 =============================================================================
 """
 

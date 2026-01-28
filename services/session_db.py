@@ -50,8 +50,6 @@ task = session_db.create_task(session_id, agent_name, task_type, description)
 # 獲取會話狀態
 state = session_db.get_session_state(session_id)
 
-作者：Agentic RAG Team
-版本：2.0
 =============================================================================
 """
 

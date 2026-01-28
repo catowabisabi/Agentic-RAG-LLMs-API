@@ -1,20 +1,60 @@
 """
-Planning Agent
+Planning Agent（LangGraph 整合版）
+===================================
 
-Creates step-by-step plans for complex tasks:
-- Decomposes complex queries into sub-tasks
-- Assigns tasks to appropriate agents
-- Streams planning process to frontend
+使用 LangGraph StateGraph 實作深度思考與自我修正迴圈的規劃代理。
+
+核心特性：
+- 使用 LangGraph 建立 Generate → Validate → Refine 迴圈
+- 支援最多 5 次自我修正（recursion_limit=5）
+- 完整整合 EventBus 保持 UI 即時更新
+- 自動分解複雜任務並分配給適當的 Agents
+
+LangGraph 工作流程：
+1. generate_node: 產生執行計劃
+2. validate_node: 驗證計劃結構
+3. conditional_edge: 根據驗證結果決定下一步
+   - 有效 → 結束
+   - 無效且 iteration < max → refine_node
+   - 達到上限 → 結束
+4. refine_node: 修正計劃並回到 validate
+
+Architecture Diagram:
+    ┌──────────────┐
+    │   START      │
+    └──────┬───────┘
+           ▼
+    ┌──────────────┐
+    │   Generate   │
+    └──────┬───────┘
+           ▼
+    ┌──────────────┐     is_valid=True
+    │   Validate   │────────────────────► END
+    └──────┬───────┘
+           │ is_valid=False
+           ▼
+    ┌──────────────┐
+    │   Refine     │
+    └──────┬───────┘
+           │
+           └──────────────────────────────┐
+                                          │
+           ┌──────────────────────────────┘
+           ▼
+    ┌──────────────┐
+    │   Validate   │  (loop back, max 5 iterations)
+    └──────────────┘
 """
 
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TypedDict, Annotated
 from datetime import datetime
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+from langgraph.graph import StateGraph, END
 
 from agents.shared_services.base_agent import BaseAgent
 from agents.shared_services.message_protocol import (
@@ -48,6 +88,33 @@ class ExecutionPlan(BaseModel):
     reasoning: str = Field(description="Reasoning behind the plan structure")
     steps: List[PlanStep] = Field(description="Ordered list of steps")
     estimated_time: str = Field(description="Estimated time to complete")
+
+
+# ============== LangGraph State Definition ==============
+class PlanningState(TypedDict):
+    """
+    LangGraph 狀態定義
+    
+    用於追蹤規劃迴圈中的狀態：
+    - query: 原始查詢
+    - plan: 當前執行計劃
+    - validation_result: 驗證結果
+    - errors: 錯誤列表
+    - iteration: 當前迭代次數
+    - messages: 用於 UI 串流的訊息列表
+    """
+    query: str
+    agent_descriptions: str
+    plan: Optional[Dict[str, Any]]
+    validation_result: Optional[Dict[str, Any]]
+    errors: List[str]
+    iteration: int
+    messages: List[str]
+    is_complete: bool
+
+
+# ============== Constants ==============
+MAX_REFINEMENT_ITERATIONS = 5  # recursion_limit
 
 
 class PlanningAgent(BaseAgent):
@@ -88,19 +155,391 @@ class PlanningAgent(BaseAgent):
             ("calculation_agent", "Mathematical calculations")
         ]
         
-        logger.info("PlanningAgent initialized")
+        # 建立 LangGraph
+        self.planning_graph = self._build_planning_graph()
+        
+        logger.info("PlanningAgent initialized with LangGraph (recursion_limit=%d)", 
+                    MAX_REFINEMENT_ITERATIONS)
+    
+    # ============== LangGraph 建構 ==============
+    def _build_planning_graph(self) -> StateGraph:
+        """
+        建立 LangGraph StateGraph
+        
+        節點：
+        - generate: 產生執行計劃
+        - validate: 驗證計劃
+        - refine: 修正計劃
+        
+        邊：
+        - START → generate
+        - generate → validate
+        - validate → END (if valid)
+        - validate → refine (if invalid and iteration < max)
+        - validate → END (if iteration >= max)
+        - refine → validate (loop back)
+        """
+        # 建立 StateGraph
+        workflow = StateGraph(PlanningState)
+        
+        # 添加節點
+        workflow.add_node("generate", self._graph_generate)
+        workflow.add_node("validate", self._graph_validate)
+        workflow.add_node("refine", self._graph_refine)
+        
+        # 設定入口點
+        workflow.set_entry_point("generate")
+        
+        # 添加邊
+        workflow.add_edge("generate", "validate")
+        workflow.add_conditional_edges(
+            "validate",
+            self._should_continue,
+            {
+                "end": END,
+                "refine": "refine"
+            }
+        )
+        workflow.add_edge("refine", "validate")
+        
+        return workflow.compile()
+    
+    async def _graph_generate(self, state: PlanningState) -> Dict[str, Any]:
+        """
+        LangGraph 節點：產生執行計劃
+        """
+        query = state["query"]
+        agent_descriptions = state["agent_descriptions"]
+        
+        prompt = ChatPromptTemplate.from_template(
+            """You are an expert task planner. Create a detailed execution plan for this task.
+
+Task: {query}
+
+Available Agents:
+{agents}
+
+Create a step-by-step plan that:
+1. Breaks down the task into atomic, manageable steps
+2. Assigns each step to the most appropriate agent
+3. Specifies dependencies between steps
+4. Estimates completion time
+
+Consider:
+- Some steps may require RAG retrieval first
+- Validation should be included for important outputs
+- Complex reasoning should use the thinking_agent
+
+Respond with your execution plan."""
+        )
+        
+        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
+        
+        try:
+            plan = await chain.ainvoke({
+                "query": query,
+                "agents": agent_descriptions
+            })
+            
+            plan_dict = {
+                "goal": plan.goal,
+                "reasoning": plan.reasoning,
+                "steps": [step.model_dump() for step in plan.steps],
+                "estimated_time": plan.estimated_time
+            }
+            
+            return {
+                "plan": plan_dict,
+                "messages": state["messages"] + [f"📌 Generated plan: {plan.goal}"],
+                "iteration": state["iteration"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating plan: {e}")
+            return {
+                "plan": None,
+                "errors": [str(e)],
+                "messages": state["messages"] + [f"❌ Generation error: {e}"],
+                "is_complete": True
+            }
+    
+    async def _graph_validate(self, state: PlanningState) -> Dict[str, Any]:
+        """
+        LangGraph 節點：驗證計劃
+        """
+        plan = state["plan"]
+        
+        if not plan:
+            return {
+                "validation_result": {"is_valid": False, "errors": ["No plan generated"]},
+                "errors": ["No plan generated"],
+                "is_complete": True
+            }
+        
+        errors = []
+        warnings = []
+        valid_agents = [name for name, _ in self.available_agents]
+        
+        steps = plan.get("steps", [])
+        
+        for step in steps:
+            agent = step.get("agent", "")
+            step_num = step.get("step_number", 0)
+            
+            if agent not in valid_agents:
+                errors.append(f"Step {step_num}: Unknown agent '{agent}'")
+            
+            for dep in step.get("input_from", []):
+                if dep >= step_num:
+                    errors.append(f"Step {step_num}: Invalid dependency on future step {dep}")
+                if dep < 1:
+                    errors.append(f"Step {step_num}: Invalid step reference {dep}")
+        
+        if len(steps) == 0:
+            errors.append("Plan has no steps")
+        
+        if len(steps) > 10:
+            warnings.append("Plan has many steps, consider simplifying")
+        
+        validation_result = {
+            "is_valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings
+        }
+        
+        iteration = state["iteration"] + 1
+        new_messages = state["messages"] + [
+            f"🔍 Validation iteration {iteration}: {'✅ Valid' if validation_result['is_valid'] else f'❌ {len(errors)} errors'}"
+        ]
+        
+        return {
+            "validation_result": validation_result,
+            "errors": errors,
+            "iteration": iteration,
+            "messages": new_messages
+        }
+    
+    async def _graph_refine(self, state: PlanningState) -> Dict[str, Any]:
+        """
+        LangGraph 節點：修正計劃
+        """
+        plan = state["plan"]
+        errors = state["errors"]
+        agent_descriptions = state["agent_descriptions"]
+        
+        prompt = ChatPromptTemplate.from_template(
+            """Fix these errors in the execution plan:
+
+Current Plan:
+Goal: {goal}
+Steps: {steps}
+
+Errors to fix:
+{errors}
+
+Available Agents:
+{agents}
+
+Create a corrected plan."""
+        )
+        
+        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
+        
+        try:
+            refined = await chain.ainvoke({
+                "goal": plan.get("goal", ""),
+                "steps": str(plan.get("steps", [])),
+                "errors": "\n".join(errors),
+                "agents": agent_descriptions
+            })
+            
+            refined_dict = {
+                "goal": refined.goal,
+                "reasoning": refined.reasoning,
+                "steps": [step.model_dump() for step in refined.steps],
+                "estimated_time": refined.estimated_time
+            }
+            
+            return {
+                "plan": refined_dict,
+                "messages": state["messages"] + [f"🔧 Refined plan (iteration {state['iteration']})"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error refining plan: {e}")
+            return {
+                "messages": state["messages"] + [f"⚠️ Refinement failed: {e}"]
+            }
+    
+    def _should_continue(self, state: PlanningState) -> str:
+        """
+        條件邊：決定是否繼續迴圈
+        
+        返回：
+        - "end": 計劃有效或達到迭代上限
+        - "refine": 計劃無效且未達上限
+        """
+        validation = state.get("validation_result", {})
+        iteration = state.get("iteration", 0)
+        
+        # 已完成（錯誤或成功）
+        if state.get("is_complete", False):
+            return "end"
+        
+        # 計劃有效
+        if validation.get("is_valid", False):
+            return "end"
+        
+        # 達到迭代上限
+        if iteration >= MAX_REFINEMENT_ITERATIONS:
+            logger.warning(f"Reached max refinement iterations ({MAX_REFINEMENT_ITERATIONS})")
+            return "end"
+        
+        # 繼續修正
+        return "refine"
     
     async def process_task(self, task: TaskAssignment) -> Any:
         """Process a planning task"""
         task_type = task.task_type
         
         if task_type == "create_plan":
-            return await self._create_plan(task)
+            return await self._create_plan_with_langgraph(task)
         elif task_type == "refine_plan":
             return await self._refine_plan(task)
         else:
-            return await self._create_plan(task)
+            return await self._create_plan_with_langgraph(task)
     
+    async def _create_plan_with_langgraph(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        使用 LangGraph 建立執行計劃
+        
+        透過 StateGraph 實現 Generate → Validate → Refine 迴圈，
+        支援最多 MAX_REFINEMENT_ITERATIONS 次自我修正。
+        """
+        original_task = task.input_data.get("original_task", {})
+        query = original_task.get("description", task.description)
+        
+        # Stream initial thinking to frontend
+        await self.stream_to_frontend(
+            f"📋 Analyzing task with LangGraph: {query[:100]}...\n", 
+            0
+        )
+        
+        agent_descriptions = "\n".join([
+            f"- {name}: {desc}" for name, desc in self.available_agents
+        ])
+        
+        # 初始化 LangGraph 狀態
+        initial_state: PlanningState = {
+            "query": query,
+            "agent_descriptions": agent_descriptions,
+            "plan": None,
+            "validation_result": None,
+            "errors": [],
+            "iteration": 0,
+            "messages": [],
+            "is_complete": False
+        }
+        
+        await self.stream_to_frontend(
+            "🔍 Starting LangGraph planning workflow...\n", 
+            1
+        )
+        
+        try:
+            # 執行 LangGraph（使用 astream 保持 UI 更新）
+            final_state = None
+            step_count = 0
+            
+            async for state in self.planning_graph.astream(initial_state):
+                step_count += 1
+                
+                # 取得當前節點的狀態
+                for node_name, node_state in state.items():
+                    if "messages" in node_state:
+                        for msg in node_state.get("messages", [])[-1:]:
+                            await self.stream_to_frontend(f"  [{node_name}] {msg}\n", step_count)
+                    
+                    final_state = node_state
+            
+            # 檢查最終結果
+            if final_state and final_state.get("plan"):
+                plan_dict = final_state["plan"]
+                validation = final_state.get("validation_result", {})
+                
+                # 串流計劃到前端
+                await self._stream_plan_dict(plan_dict)
+                
+                result = {
+                    "success": True,
+                    "plan": plan_dict,
+                    "validation": validation,
+                    "iterations": final_state.get("iteration", 1),
+                    "langgraph": True
+                }
+                
+                # 發送計劃到 Manager
+                plan_obj = ExecutionPlan(
+                    goal=plan_dict["goal"],
+                    reasoning=plan_dict["reasoning"],
+                    steps=[PlanStep(**s) for s in plan_dict["steps"]],
+                    estimated_time=plan_dict["estimated_time"]
+                )
+                await self._send_plan_to_manager(plan_obj, original_task)
+                
+                return result
+            else:
+                errors = final_state.get("errors", ["Unknown error"]) if final_state else ["No state returned"]
+                return {
+                    "success": False,
+                    "error": "; ".join(errors),
+                    "langgraph": True
+                }
+                
+        except Exception as e:
+            logger.error(f"LangGraph error: {e}")
+            await self.stream_to_frontend(f"❌ LangGraph error: {e}\n", -1)
+            return {
+                "success": False,
+                "error": str(e),
+                "langgraph": True
+            }
+    
+    async def _stream_plan_dict(self, plan: Dict[str, Any]):
+        """Stream plan dictionary to frontend"""
+        await self.stream_to_frontend(
+            f"\n📌 Goal: {plan.get('goal', 'N/A')}\n",
+            100
+        )
+        
+        await self.stream_to_frontend(
+            f"💭 Reasoning: {plan.get('reasoning', 'N/A')}\n\n",
+            101
+        )
+        
+        await self.stream_to_frontend(
+            "📝 Execution Steps:\n",
+            102
+        )
+        
+        for i, step in enumerate(plan.get("steps", [])):
+            step_text = (
+                f"\n  Step {step.get('step_number', i+1)}: [{step.get('agent', 'unknown')}]\n"
+                f"  Action: {step.get('action', 'N/A')}\n"
+                f"  Details: {step.get('description', 'N/A')}\n"
+                f"  Expected: {step.get('expected_output', 'N/A')}\n"
+            )
+            if step.get("input_from"):
+                step_text += f"  Depends on: Steps {step['input_from']}\n"
+            
+            await self.stream_to_frontend(step_text, 103 + i)
+            await asyncio.sleep(0.1)
+        
+        await self.stream_to_frontend(
+            f"\n⏱️ Estimated time: {plan.get('estimated_time', 'N/A')}\n",
+            200
+        )
+
     async def _create_plan(self, task: TaskAssignment) -> Dict[str, Any]:
         """Create an execution plan for a complex task"""
         original_task = task.input_data.get("original_task", {})
