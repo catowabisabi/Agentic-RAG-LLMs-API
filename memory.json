@@ -1,21 +1,132 @@
 {
+  "project_info": {
+    "name": "Agentic RAG Multi-Agent System",
+    "version": "2.0.0",
+    "last_updated": "2026-01-28",
+    "description": "Multi-Agent RAG 系統，整合 LangGraph、MCP 和 ChromaDB"
+  },
+  
   "project_structure": {
     "main_entry": "main.py",
     "api_port": 1130,
     "ui_port": 1131,
+    "mcp_port": 8001,
     "websocket_endpoint": "ws://localhost:1130/ws"
   },
+  
   "startup_instructions": {
     "api_only": "python main.py --api",
-    "ui_only": "python main.py --ui", 
+    "ui_only": "python main.py --ui",
     "both_services": "python main.py --ui",
+    "mcp_server": "python -m mcp.server",
     "environment": "Windows PowerShell 首選，WSL 缺少依賴套件"
   },
+  
+  "agents": {
+    "total_count": 14,
+    "core_agents": [
+      "manager_agent - 任務分派與協調",
+      "rag_agent - 文檔檢索",
+      "memory_agent - 記憶管理",
+      "notes_agent - 筆記整理",
+      "validation_agent - 回應驗證",
+      "planning_agent - 任務規劃 (LangGraph)",
+      "thinking_agent - 深度推理",
+      "roles_agent - 角色監控",
+      "casual_chat_agent - 日常對話"
+    ],
+    "auxiliary_agents": [
+      "data_agent - 資料處理",
+      "tool_agent - 工具執行",
+      "summarize_agent - 文本摘要",
+      "translate_agent - 語言翻譯",
+      "calculation_agent - 數學計算"
+    ]
+  },
+  
+  "vector_databases": {
+    "active": "agentic-rag-docs",
+    "databases": {
+      "solidworks": {"docs": 296, "category": "technical"},
+      "agentic-example": {"docs": 172, "category": "technical"},
+      "agentic-rag-docs": {"docs": 32, "category": "general"},
+      "medical": {"docs": 0, "category": "science"},
+      "personal-finance": {"docs": 0, "category": "finance"},
+      "pinescript": {"docs": 0, "category": "trading"},
+      "python-tradebot": {"docs": 0, "category": "trading"},
+      "short-trading": {"docs": 0, "category": "trading"},
+      "market-data": {"docs": 0, "category": "trading"}
+    }
+  },
+  
+  "mcp_services": {
+    "description": "Model Context Protocol 服務，供外部 AI 客戶端調用",
+    "providers": [
+      {"name": "brave_search", "requires_key": true, "env": "BRAVE_API_KEY"},
+      {"name": "firecrawl", "requires_key": true, "env": "FIRECRAWL_API_KEY"},
+      {"name": "exa", "requires_key": true, "env": "EXA_API_KEY"},
+      {"name": "e2b", "requires_key": true, "env": "E2B_API_KEY"},
+      {"name": "supabase", "requires_key": true, "env": "SUPABASE_URL,SUPABASE_KEY"},
+      {"name": "github", "requires_key": true, "env": "GITHUB_TOKEN"},
+      {"name": "zapier", "requires_key": true, "env": "ZAPIER_API_KEY"},
+      {"name": "file_control", "requires_key": false},
+      {"name": "system_command", "requires_key": false},
+      {"name": "database_control", "requires_key": false},
+      {"name": "communication", "requires_key": false}
+    ],
+    "services": [
+      "medical_rag_service - PubMed/PMC 文獻檢索",
+      "code_execution_service - 雲端程式碼執行",
+      "web_scraping_service - 網頁爬蟲",
+      "database_service - 資料庫操作",
+      "automation_service - 自動化流程"
+    ]
+  },
+  
+  "docker": {
+    "main": {
+      "file": "docker/Dockerfile",
+      "port": 8000,
+      "description": "主服務容器（API + 全部依賴）"
+    },
+    "mcp": {
+      "file": "docker/Dockerfile.mcp",
+      "port": 8001,
+      "description": "獨立 MCP Server 容器（輕量）"
+    }
+  },
+  
+  "scripts": {
+    "startup": [
+      "Scripts/run_api.bat - Windows 啟動 API",
+      "Scripts/run_with_ui.bat - Windows 啟動 API + UI",
+      "Scripts/start_services.sh - Linux/WSL 啟動服務"
+    ],
+    "utilities": [
+      "Scripts/cleanup_vectordb.py - VectorDB 清理整合",
+      "Scripts/load_docs_to_vectordb.py - 文檔載入 VectorDB",
+      "Scripts/test_mcp_services.py - MCP 服務測試"
+    ],
+    "tmux": [
+      "Scripts/start_tmux.sh - 啟動 tmux 會話",
+      "Scripts/check_tmux.sh - 檢查 tmux 狀態",
+      "Scripts/cleanup_tmux.sh - 清理 tmux"
+    ]
+  },
+  
+  "documentation": {
+    "system": "app_docs/SYSTEM_DOCUMENTATION.md",
+    "planning": "app_docs/PLANNING.md",
+    "vectordb": "app_docs/VECTOR_DATABASE_GUIDE.md",
+    "mcp_guide": "app_docs/MCP_INVESTOR_GUIDE.md",
+    "readme": "app_docs/README.md"
+  },
+  
   "tmux_management": {
     "session_name": "agentic_rag",
     "windows": {
       "0": "main - 主控制台",
-      "1": "testing_terminal - API 測試/curl/debug", 
+      "1": "testing_terminal - API 測試/curl/debug",
       "2": "api_terminal - FastAPI Backend (Port 1130)",
       "3": "ui_terminal - Next.js Frontend (Port 1131)"
     },
@@ -27,21 +138,35 @@
     },
     "startup_command": "wsl -d Ubuntu -e bash -c 'cd /mnt/d/codebase/Agentic-RAG-LLMs-API && tmux attach-session -t agentic_rag'"
   },
+  
   "port_configuration": {
     "1130": {
       "service": "FastAPI API Server",
-      "agents_count": 13,
+      "agents_count": 14,
       "health_check": "http://localhost:1130/agents/health"
     },
     "1131": {
-      "service": "Next.js UI Server", 
+      "service": "Next.js UI Server",
       "login": "guest / beourguest",
       "url": "http://localhost:1131"
+    },
+    "8001": {
+      "service": "MCP Server (獨立部署時)",
+      "protocol": "stdio / SSE"
     }
   },
+  
   "operational_rules": {
     "priority": "使用 tmux 為主要管理工具，避免終端中斷問題",
     "monitoring": "透過 tmux capture-pane 檢查服務狀態",
-    "backup_method": "Windows PowerShell 直接啟動作為備用方案"
+    "backup_method": "Windows PowerShell 直接啟動作為備用方案",
+    "mcp_testing": "python Scripts/test_mcp_services.py --all"
+  },
+  
+  "tech_stack": {
+    "backend": ["FastAPI", "LangChain", "LangGraph", "ChromaDB"],
+    "frontend": ["Next.js", "React", "Tailwind CSS"],
+    "ai": ["OpenAI GPT-4", "text-embedding-3-small"],
+    "protocol": ["MCP (Model Context Protocol)", "WebSocket"]
   }
 }
