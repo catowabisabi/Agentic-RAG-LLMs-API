@@ -9,6 +9,7 @@ REST API endpoints for RAG operations:
 """
 
 import logging
+import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -30,6 +31,15 @@ class QueryRequest(BaseModel):
     collection: str = Field(default="default", description="Collection to query")
     top_k: int = Field(default=5, description="Number of results")
     threshold: float = Field(default=0.0, description="Minimum relevance score")
+    mode: str = Field(default="single", description="Query mode: single, multi, auto")
+
+
+class SmartQueryRequest(BaseModel):
+    """Request for smart RAG query with auto-routing"""
+    query: str = Field(description="Query string")
+    top_k: int = Field(default=5, description="Number of results per database")
+    threshold: float = Field(default=0.0, description="Minimum relevance score")
+    mode: str = Field(default="auto", description="auto, multi, or specific database name")
 
 
 class DocumentRequest(BaseModel):
@@ -68,6 +78,196 @@ async def query_documents(request: QueryRequest):
     except Exception as e:
         logger.error(f"Query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/smart-query")
+async def smart_query(request: SmartQueryRequest):
+    """Smart query with auto-routing or multi-database search"""
+    try:
+        if request.mode == "multi":
+            # Search all databases
+            return await _multi_database_search(request)
+        elif request.mode == "auto":
+            # Auto route to best database
+            return await _auto_route_query(request)
+        else:
+            # Single database query
+            retriever = DocumentRetriever(collection_name=request.mode)
+            results = retriever.retrieve(request.query, top_k=request.top_k)
+            
+            if request.threshold > 0:
+                results = [r for r in results if r.get("score", 0) >= request.threshold]
+            
+            return {
+                "query": request.query,
+                "mode": "single",
+                "selected_database": request.mode,
+                "results": results,
+                "count": len(results)
+            }
+    except Exception as e:
+        logger.error(f"Smart query error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
+    """Search across all databases and merge results"""
+    databases = vectordb_manager.list_databases()
+    all_results = []
+    database_counts = {}
+    
+    for db_info in databases:
+        db_name = db_info.get("name")
+        if db_info.get("document_count", 0) == 0:
+            continue
+            
+        try:
+            retriever = DocumentRetriever(collection_name=db_name)
+            results = retriever.retrieve(request.query, top_k=request.top_k)
+            
+            # Add database info to each result
+            for result in results:
+                result["source_database"] = db_name
+                result["database_description"] = db_info.get("description", "")
+                all_results.append(result)
+            
+            database_counts[db_name] = len(results)
+        except Exception as e:
+            logger.warning(f"Error searching {db_name}: {e}")
+            continue
+    
+    # Sort by relevance score
+    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    
+    # Filter by threshold
+    if request.threshold > 0:
+        all_results = [r for r in all_results if r.get("score", 0) >= request.threshold]
+    
+    # Limit total results
+    all_results = all_results[:request.top_k * 3]
+    
+    return {
+        "query": request.query,
+        "mode": "multi",
+        "searched_databases": list(database_counts.keys()),
+        "database_counts": database_counts,
+        "results": all_results,
+        "count": len(all_results)
+    }
+
+
+async def _auto_route_query(request: SmartQueryRequest) -> Dict[str, Any]:
+    """Automatically route query to the best database(s)"""
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import ChatPromptTemplate
+    from pydantic import BaseModel, Field
+    from config.config import Config
+    
+    config = Config()
+    llm = ChatOpenAI(
+        model=config.DEFAULT_MODEL,
+        temperature=0,
+        api_key=config.OPENAI_API_KEY
+    )
+    
+    class DatabaseSelection(BaseModel):
+        selected_databases: List[str] = Field(description="List of database names to search")
+        reasoning: str = Field(description="Reasoning for database selection")
+    
+    # Get available databases
+    databases = vectordb_manager.list_databases()
+    db_descriptions = {}
+    db_map = {}  # name -> info mapping
+    
+    for db_info in databases:
+        db_name = db_info.get("name")
+        db_map[db_name] = db_info
+        if db_info.get("document_count", 0) > 0:
+            db_descriptions[db_name] = {
+                "description": db_info.get("description", ""),
+                "category": db_info.get("category", ""),
+                "document_count": db_info.get("document_count", 0)
+            }
+    
+    # Create routing prompt
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a database routing expert. Given a user query and available databases,
+select the most relevant database(s) to search.
+
+Available Databases:
+{databases}
+
+Rules:
+1. Select 1-3 most relevant databases
+2. Consider the query topic, keywords, and database descriptions
+3. Prefer databases with more documents if relevance is similar
+4. Return database names exactly as shown"""),
+        ("user", "Query: {query}")
+    ])
+    
+    chain = prompt | llm.with_structured_output(DatabaseSelection)
+    
+    try:
+        selection = await chain.ainvoke({
+            "query": request.query,
+            "databases": json.dumps(db_descriptions, indent=2, ensure_ascii=False)
+        })
+        
+        # Search selected databases
+        all_results = []
+        database_counts = {}
+        
+        for db_name in selection.selected_databases:
+            if db_name not in db_map:
+                continue
+                
+            try:
+                retriever = DocumentRetriever(collection_name=db_name)
+                results = retriever.retrieve(request.query, top_k=request.top_k)
+                
+                for result in results:
+                    result["source_database"] = db_name
+                    result["database_description"] = db_map[db_name].get("description", "")
+                    all_results.append(result)
+                
+                database_counts[db_name] = len(results)
+            except Exception as e:
+                logger.warning(f"Error searching {db_name}: {e}")
+                continue
+        
+        # Sort and filter
+        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        
+        if request.threshold > 0:
+            all_results = [r for r in all_results if r.get("score", 0) >= request.threshold]
+        
+        all_results = all_results[:request.top_k * 2]
+        
+        return {
+            "query": request.query,
+            "mode": "auto",
+            "selected_databases": selection.selected_databases,
+            "reasoning": selection.reasoning,
+            "database_counts": database_counts,
+            "results": all_results,
+            "count": len(all_results)
+        }
+        
+    except Exception as e:
+        logger.error(f"Auto routing error: {e}")
+        # Fallback to current active database
+        active_db = vectordb_manager.get_active_database()
+        retriever = DocumentRetriever(collection_name=active_db)
+        results = retriever.retrieve(request.query, top_k=request.top_k)
+        
+        return {
+            "query": request.query,
+            "mode": "auto_fallback",
+            "selected_databases": [active_db],
+            "reasoning": f"Fallback to active database due to routing error: {e}",
+            "results": results,
+            "count": len(results)
+        }
 
 
 @router.post("/document")
