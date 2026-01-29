@@ -32,6 +32,12 @@ if not exist "ui\node_modules" (
     cd ..
 )
 
+:: Kill existing processes on ports 1130 and 1131
+echo [INFO] Checking for existing processes...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :1130 ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :1131 ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
+timeout /t 1 /nobreak >nul
+
 echo.
 echo [1] Starting API Server on port 1130...
 echo [2] Starting UI Server on port 1131...
