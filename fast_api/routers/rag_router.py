@@ -96,7 +96,7 @@ async def smart_query(request: SmartQueryRequest):
             results = retriever.retrieve(request.query, top_k=request.top_k)
             
             if request.threshold > 0:
-                results = [r for r in results if r.get("score", 0) >= request.threshold]
+                results = [r for r in results if r.get("similarity_score", 0) >= request.threshold]
             
             return {
                 "query": request.query,
@@ -137,11 +137,11 @@ async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
             continue
     
     # Sort by relevance score
-    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
     
     # Filter by threshold
     if request.threshold > 0:
-        all_results = [r for r in all_results if r.get("score", 0) >= request.threshold]
+        all_results = [r for r in all_results if r.get("similarity_score", 0) >= request.threshold]
     
     # Limit total results
     all_results = all_results[:request.top_k * 3]
@@ -236,10 +236,10 @@ Rules:
                 continue
         
         # Sort and filter
-        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
         
         if request.threshold > 0:
-            all_results = [r for r in all_results if r.get("score", 0) >= request.threshold]
+            all_results = [r for r in all_results if r.get("similarity_score", 0) >= request.threshold]
         
         all_results = all_results[:request.top_k * 2]
         
