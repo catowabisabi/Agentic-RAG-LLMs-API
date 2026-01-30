@@ -71,21 +71,43 @@ class CasualChatAgent(BaseAgent):
         # System prompt for casual conversation
         self.system_prompt = """You are a friendly AI assistant having a casual conversation.
 
-Guidelines:
+## CRITICAL LANGUAGE RULE (MUST FOLLOW):
+You MUST respond in the SAME LANGUAGE as the user's message:
+- Chinese (中文/廣東話) input → Chinese response
+- English input → English response  
+- Mixed → Use user's dominant language
+
+Examples of language matching:
+- 用戶：「你好」→ 你要用中文回答
+- 用戶：「你有咩功能」→ 用中文回答功能列表
+- User: "Hello" → Respond in English
+
+## Guidelines:
 - Be warm, friendly, and conversational
 - Keep responses brief and natural (1-3 sentences usually)
 - Don't over-explain or be overly formal
-- Match the user's energy and tone
-- If asked about yourself, you're an AI assistant that helps with knowledge and tasks
-- Don't redirect to other topics unless asked
 - Take into account the conversation history if provided
 
-Examples:
-User: "Hello!"
-Assistant: "Hey there! How can I help you today?"
+## Capabilities (answer in user's language):
+When asked about capabilities, explain that you can:
+- 回答問題和對話 / Answer questions and chat
+- 搜索知識庫 / Search knowledge bases  
+- 規劃和分析 / Planning and analysis
+- 翻譯、總結、計算 / Translate, summarize, calculate
+- 記住用戶偏好 / Remember preferences
 
-User: "Thanks for your help!"
-Assistant: "You're welcome! Feel free to ask if you need anything else."
+## Examples:
+User: "Hello!"
+→ Hey there! How can I help you today?
+
+User: "你好"  
+→ 你好！有什麼可以幫到你？
+
+User: "你有咩功能"
+→ 我可以幫你：回答問題、搜索知識庫、規劃分析、翻譯、總結文件，同埋記住你嘅偏好。有咩需要？
+
+User: "What can you do?"
+→ I can help with many things! Answer questions, search knowledge bases, help with planning, translate, summarize, and remember your preferences.
 """
         
         self.chat_prompt = ChatPromptTemplate.from_messages([
@@ -263,8 +285,9 @@ Assistant: "You're welcome! Feel free to ask if you need anything else."
         """
         message_lower = message.lower().strip()
         
-        # Common casual patterns
+        # Common casual patterns (English + Chinese/Cantonese)
         casual_patterns = [
+            # === English ===
             # Greetings
             "hello", "hi", "hey", "hi there", "hello there", "howdy",
             "good morning", "good afternoon", "good evening", "good night",
@@ -277,6 +300,8 @@ Assistant: "You're welcome! Feel free to ask if you need anything else."
             # Simple questions about the bot
             "who are you", "what are you", "what's your name", "whats your name",
             "are you a bot", "are you ai", "are you human",
+            "what can you do", "what do you do", "how can you help",
+            "what are your capabilities", "what features", "your features",
             # Affirmations
             "ok", "okay", "got it", "understood", "sure", "yes", "no",
             "alright", "fine", "cool", "great", "nice", "awesome",
@@ -285,6 +310,37 @@ Assistant: "You're welcome! Feel free to ask if you need anything else."
             "nice to meet you", "pleased to meet you",
             # Apologies
             "sorry", "my bad", "excuse me", "pardon",
+            
+            # === 中文 (Mandarin) ===
+            # 問候
+            "你好", "您好", "嗨", "哈囉", "哈喽", "早安", "午安", "晚安",
+            "早上好", "下午好", "晚上好",
+            # 告別
+            "再見", "再见", "拜拜", "掰掰", "晚安", "保重",
+            # 感謝
+            "謝謝", "谢谢", "感謝", "感谢", "多謝", "多谢", "3q", "thx",
+            # 關於 AI 的問題
+            "你是誰", "你是谁", "你叫什麼", "你叫什么", "你的名字",
+            "你是機器人", "你是机器人", "你是ai", "你是人工智慧", "你是人工智能",
+            "你有什麼功能", "你有什么功能", "你能做什麼", "你能做什么",
+            "你會什麼", "你会什么", "你可以做什麼", "你可以做什么",
+            "你的功能", "有什麼功能", "有什么功能", "能做啥", "會做啥", "会做啥",
+            # 確認
+            "好", "好的", "了解", "知道了", "明白", "收到", "ok", "嗯",
+            "是", "不是", "對", "对", "沒問題", "没问题",
+            # 問候語
+            "你好嗎", "你好吗", "最近怎樣", "最近怎样", "吃了嗎", "吃了吗",
+            # 道歉
+            "對不起", "对不起", "抱歉", "不好意思", "sorry",
+            
+            # === 粵語 (Cantonese) ===
+            "你有咩功能", "你有乜功能", "你識咩", "你识乜", "你識做咩", "你识做乜",
+            "你會咩", "你会乜", "你可以做咩", "你可以做乜", "做到咩", "做到乜",
+            "有咩功能", "有乜功能", "咩功能", "乜功能",
+            "你係邊個", "你系边个", "你叫咩名", "你叫乜名",
+            "你係ai", "你系ai", "你係機械人", "你系机械人",
+            "多謝", "唔該", "唔该", "拜拜", "早晨", "早抖",
+            "點呀", "点呀", "點樣", "点样", "幾好", "几好",
         ]
         
         # Check if message matches or starts with casual pattern

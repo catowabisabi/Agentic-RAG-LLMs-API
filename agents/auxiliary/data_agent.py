@@ -279,7 +279,7 @@ Return only the converted data in {target_format} format."""
     async def _process_generic(self, task: TaskAssignment) -> Dict[str, Any]:
         """Process a generic data task"""
         data = task.input_data.get("data", "")
-        instructions = task.input_data.get("instructions", task.context)
+        instructions = task.input_data.get("instructions", task.description)
         
         prompt = ChatPromptTemplate.from_template(
             """Process the following data according to these instructions.

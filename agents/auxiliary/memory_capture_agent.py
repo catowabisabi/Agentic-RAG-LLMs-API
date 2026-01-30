@@ -136,8 +136,14 @@ If nothing worth remembering, respond:
 """
         
         try:
-            from config.config import get_llm
-            llm = get_llm()
+            from langchain_openai import ChatOpenAI
+            from config.config import Config
+            config = Config()
+            llm = ChatOpenAI(
+                model=config.DEFAULT_MODEL,
+                temperature=0.3,
+                api_key=config.OPENAI_API_KEY
+            )
             
             result = await llm.ainvoke(prompt)
             content = result.content if hasattr(result, 'content') else str(result)

@@ -46,7 +46,15 @@ logger = logging.getLogger(__name__)
 class QueryClassification(BaseModel):
     """Classification of user query for routing"""
     query_type: str = Field(
-        description="Type of query: 'casual_chat' (greetings, chitchat), 'simple_rag' (direct knowledge query), 'complex_planning' (multi-step reasoning needed)"
+        description="""Type of query:
+        - 'casual_chat': greetings, chitchat, questions about AI capabilities
+        - 'knowledge_rag': questions that need searching knowledge bases
+        - 'general_knowledge': general questions LLM can answer without RAG (e.g., "what is VBA")
+        - 'calculation': math, numbers, data analysis
+        - 'translation': language translation requests
+        - 'summarization': summarize content
+        - 'complex_planning': multi-step reasoning, comparison, analysis
+        """
     )
     reasoning: str = Field(description="Brief explanation for this classification")
     confidence: float = Field(default=0.8, description="Confidence in classification (0-1)")
@@ -175,21 +183,34 @@ class ManagerAgent(BaseAgent):
         
         # Use LLM for classification
         classification_prompt = ChatPromptTemplate.from_template(
-            """Classify this user query into one of three categories:
+            """You are a query router. Classify this user query into ONE category:
 
-1. casual_chat: Greetings, small talk, thanks, farewells
-   Examples: "Hello", "How are you?", "Thanks!", "Goodbye"
-   NOTE: Questions about the AI's capabilities, functions, available tools, or data are NOT casual chat.
+1. casual_chat: Greetings, small talk, thanks, farewells, questions about AI capabilities
+   Examples: "Hello", "Thanks!", "What can you do?", "你有什麼功能", "你有咩功能", "Who are you?"
+   
+2. general_knowledge: General questions that an LLM can answer from training data (no RAG needed)
+   Examples: "What is VBA?", "Explain Python", "What is machine learning?", "How do I write a for loop?"
+   NOTE: Common knowledge, definitions, concepts, programming questions → general_knowledge
 
-2. simple_rag: Direct knowledge questions, definitions, or questions about the AI's available data/knowledge
-   Examples: "What is X?", "How does Y work?", "What databases do you have?", "What can you do?", "What is in RAG?"
+3. knowledge_rag: Questions that specifically need to search the user's uploaded documents/knowledge bases
+   Examples: "What does my document say about X?", "Search my files for Y", "Based on the uploaded data..."
+   NOTE: Only use this if the user is clearly asking about THEIR OWN uploaded content
 
-3. complex_planning: Multi-step queries requiring planning, comparison, analysis, or combining multiple sources
-   Examples: "Compare X and Y", "What are the steps to...", "Analyze...", "Create a plan for..."
+4. calculation: Math problems, data analysis, numerical computations
+   Examples: "Calculate 15% of 200", "What is the sum of...", "Analyze these numbers"
+
+5. translation: Language translation requests
+   Examples: "Translate this to Chinese", "How do you say X in French?"
+
+6. summarization: Summarize content, create summaries
+   Examples: "Summarize this article", "Give me the key points of..."
+
+7. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
+   Examples: "Compare X and Y", "Create a plan for...", "Analyze and recommend..."
 
 User query: "{query}"
 
-Respond with ONLY the category name (casual_chat, simple_rag, or complex_planning) and a brief reason.
+Respond with ONLY the category name and a brief reason.
 Format: category|reason"""
         )
         
@@ -204,8 +225,13 @@ Format: category|reason"""
             reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
             
             # Validate query_type
-            if query_type not in ["casual_chat", "simple_rag", "complex_planning"]:
-                query_type = "simple_rag"  # Default fallback
+            valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "complex_planning"]
+            if query_type not in valid_types:
+                # Fallback: if it looks like a question, try general_knowledge
+                if "?" in query or query_type == "simple_rag":
+                    query_type = "general_knowledge"
+                else:
+                    query_type = "general_knowledge"  # Default fallback
                 
             return QueryClassification(
                 query_type=query_type,
@@ -268,9 +294,8 @@ Format: category|reason"""
                 "priority": 1
             })
             
-            # Re-route to Simple RAG (or Thinking Agent if needed, but RAG is safer default for "what can you do")
-            # We treat it as if it was classified as simple_rag originally
-            return await self._handle_simple_rag(task, use_rag=True)
+            # Re-route to general knowledge (not RAG, since user is asking about AI capabilities)
+            return await self._handle_general_knowledge(task)
 
         await self.ws_manager.broadcast_agent_activity({
             "type": "task_completed",
@@ -291,8 +316,8 @@ Format: category|reason"""
         Handle a user query through smart routing.
         
         Workflow:
-        1. Classify query (casual, simple_rag, complex)
-        2. Route to appropriate handler
+        1. Classify query type
+        2. Route to appropriate handler/agent
         3. Return response via manager
         """
         logger.info(f"[Manager] Handling user query: {task.description[:50]}...")
@@ -329,11 +354,213 @@ Format: category|reason"""
         # Step 2: Route based on classification
         if classification.query_type == "casual_chat":
             return await self._handle_casual_chat(task)
-        elif classification.query_type == "simple_rag":
+        elif classification.query_type == "knowledge_rag":
+            # Only use RAG when specifically searching user's documents
             return await self._handle_simple_rag_query(task)
-        else:  # complex_planning
+        elif classification.query_type == "general_knowledge":
+            # Use thinking agent for general knowledge questions (no RAG)
+            return await self._handle_general_knowledge(task)
+        elif classification.query_type == "calculation":
+            return await self._handle_calculation(task)
+        elif classification.query_type == "translation":
+            return await self._handle_translation(task)
+        elif classification.query_type == "summarization":
+            return await self._handle_summarization(task)
+        elif classification.query_type == "complex_planning":
             return await self._handle_complex_query(task)
+        else:
+            # Fallback to general knowledge
+            return await self._handle_general_knowledge(task)
     
+    async def _handle_general_knowledge(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Handle general knowledge questions using ThinkingAgent (no RAG needed).
+        LLM can answer from its training data.
+        """
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        chat_history = task.input_data.get("chat_history", [])
+        user_context = task.input_data.get("user_context", "")
+        
+        logger.info(f"[Manager] General knowledge query - direct LLM answer")
+        
+        agents_involved = ["manager_agent"]
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "manager_agent",
+            "source": self.agent_name,
+            "target": "llm",
+            "content": {"task": "general_knowledge", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        # Build chat history context
+        history_context = ""
+        if chat_history:
+            history_parts = []
+            for exchange in chat_history[-5:]:
+                if "human" in exchange:
+                    history_parts.append(f"User: {exchange['human']}")
+                if "assistant" in exchange:
+                    history_parts.append(f"Assistant: {exchange['assistant']}")
+            if history_parts:
+                history_context = "Previous conversation:\n" + "\n".join(history_parts) + "\n\n"
+        
+        # Direct LLM call for general knowledge
+        prompt = f"""You are a helpful AI assistant. Answer this question clearly and informatively.
+
+{f'User Context: {user_context}' if user_context else ''}
+{history_context}
+Question: {query}
+
+Guidelines:
+- Provide a clear, accurate answer
+- Match the language of the question (if asked in Chinese, respond in Chinese)
+- Be concise but informative
+- If it's a technical term or concept, provide a brief explanation"""
+        
+        llm_result = await self.llm.ainvoke(prompt)
+        response_text = llm_result.content if hasattr(llm_result, 'content') else str(llm_result)
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_completed",
+            "agent": "manager_agent",
+            "source": "manager_agent",
+            "target": self.agent_name,
+            "content": {"workflow": "general_knowledge"},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": [],
+            "workflow": "general_knowledge"
+        }
+    
+    async def _handle_calculation(self, task: TaskAssignment) -> Dict[str, Any]:
+        """Handle calculation/math requests using CalculationAgent"""
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        
+        logger.info(f"[Manager] Calculation query - using CalculationAgent")
+        
+        agents_involved = ["manager_agent"]
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "calculation_agent",
+            "source": self.agent_name,
+            "target": "calculation_agent",
+            "content": {"task": "calculate", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        agents_involved.append("calculation_agent")
+        
+        calc_agent = self.registry.get_agent("calculation_agent")
+        if calc_agent:
+            calc_task = TaskAssignment(
+                task_id=task_id,
+                task_type="calculate",
+                description=query,
+                input_data={"expression": query}
+            )
+            result = await calc_agent.process_task(calc_task)
+            response_text = result.get("response", result.get("result", str(result)))
+        else:
+            response_text = "Calculation agent not available."
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": [],
+            "workflow": "calculation"
+        }
+    
+    async def _handle_translation(self, task: TaskAssignment) -> Dict[str, Any]:
+        """Handle translation requests using TranslateAgent"""
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        
+        logger.info(f"[Manager] Translation query - using TranslateAgent")
+        
+        agents_involved = ["manager_agent"]
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "translate_agent",
+            "source": self.agent_name,
+            "target": "translate_agent",
+            "content": {"task": "translate", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        agents_involved.append("translate_agent")
+        
+        translate_agent = self.registry.get_agent("translate_agent")
+        if translate_agent:
+            translate_task = TaskAssignment(
+                task_id=task_id,
+                task_type="translate",
+                description=query,
+                input_data={"text": query}
+            )
+            result = await translate_agent.process_task(translate_task)
+            response_text = result.get("response", result.get("translation", str(result)))
+        else:
+            response_text = "Translation agent not available."
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": [],
+            "workflow": "translation"
+        }
+    
+    async def _handle_summarization(self, task: TaskAssignment) -> Dict[str, Any]:
+        """Handle summarization requests using SummarizeAgent"""
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        
+        logger.info(f"[Manager] Summarization query - using SummarizeAgent")
+        
+        agents_involved = ["manager_agent"]
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "summarize_agent",
+            "source": self.agent_name,
+            "target": "summarize_agent",
+            "content": {"task": "summarize", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        agents_involved.append("summarize_agent")
+        
+        summarize_agent = self.registry.get_agent("summarize_agent")
+        if summarize_agent:
+            summarize_task = TaskAssignment(
+                task_id=task_id,
+                task_type="summarize",
+                description=query,
+                input_data={"text": query}
+            )
+            result = await summarize_agent.process_task(summarize_task)
+            response_text = result.get("response", result.get("summary", str(result)))
+        else:
+            response_text = "Summarization agent not available."
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": [],
+            "workflow": "summarization"
+        }
+
     async def _handle_simple_rag_query(self, task: TaskAssignment) -> Dict[str, Any]:
         """
         Handle a simple RAG query - just retrieval + direct response.

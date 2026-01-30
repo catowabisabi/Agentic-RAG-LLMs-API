@@ -81,7 +81,7 @@ class SummarizeAgent(BaseAgent):
     
     async def _summarize(self, task: TaskAssignment) -> Dict[str, Any]:
         """Create a comprehensive summary"""
-        content = task.input_data.get("content", task.context)
+        content = task.input_data.get("content", task.description)
         max_length = task.input_data.get("max_length", 200)
         style = task.input_data.get("style", "concise")
         
@@ -132,7 +132,7 @@ Provide:
     
     async def _extract_key_points(self, task: TaskAssignment) -> Dict[str, Any]:
         """Extract key points from content"""
-        content = task.input_data.get("content", task.context)
+        content = task.input_data.get("content", task.description)
         num_points = task.input_data.get("num_points", 5)
         
         prompt = ChatPromptTemplate.from_template(
@@ -170,7 +170,7 @@ Return only the key points as a numbered list."""
     
     async def _abstractive_summary(self, task: TaskAssignment) -> Dict[str, Any]:
         """Create an abstractive (rewritten) summary"""
-        content = task.input_data.get("content", task.context)
+        content = task.input_data.get("content", task.description)
         length = task.input_data.get("length", "medium")
         
         length_guide = {
@@ -206,7 +206,7 @@ Summary:"""
     
     async def _extractive_summary(self, task: TaskAssignment) -> Dict[str, Any]:
         """Create an extractive (key sentences) summary"""
-        content = task.input_data.get("content", task.context)
+        content = task.input_data.get("content", task.description)
         num_sentences = task.input_data.get("num_sentences", 3)
         
         prompt = ChatPromptTemplate.from_template(
@@ -238,7 +238,7 @@ Most important sentences:"""
     
     async def _bullet_points(self, task: TaskAssignment) -> Dict[str, Any]:
         """Convert content to bullet points"""
-        content = task.input_data.get("content", task.context)
+        content = task.input_data.get("content", task.description)
         max_points = task.input_data.get("max_points", 10)
         
         prompt = ChatPromptTemplate.from_template(
@@ -263,7 +263,7 @@ Bullet points:"""
         lines = result.content.strip().split("\n")
         bullets = []
         for line in lines:
-            point = line.strip().lstrip("-•* ")
+            point = line.strip().lstrip("-?? ")
             if point:
                 bullets.append(point)
         

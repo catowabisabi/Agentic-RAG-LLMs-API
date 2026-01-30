@@ -142,6 +142,10 @@ async def get_rag_context(query: str) -> tuple[str, List[Dict]]:
         return "", []
 
 
+# Import Entry Classifier
+from agents.core.entry_classifier import get_entry_classifier
+
+
 async def process_chat_task(
     task_id: str,
     message: str,
@@ -153,7 +157,11 @@ async def process_chat_task(
 ) -> Dict[str, Any]:
     """
     Background task handler for chat processing.
-    This runs independently of the frontend connection.
+    
+    架構：
+    1. Entry Classifier 判斷 casual vs task
+    2. Casual → Casual Chat Agent
+    3. Task → Manager Agent → Planning → Execute
     
     Now integrated with SessionDB for persistent storage and recovery.
     Also integrates with Cerebro memory system for personalization.
@@ -234,72 +242,137 @@ async def process_chat_task(
     )
     
     # Update progress (legacy task_manager for polling)
-    task_manager.update_progress(task_id, 5, "Initializing...", ["manager_agent"])
+    task_manager.update_progress(task_id, 5, "Initializing...", ["entry_classifier"])
     
     try:
-        # Get manager agent
-        manager_agent = registry.get_agent("manager_agent")
-        if not manager_agent:
-            raise Exception("Manager agent not available")
+        # =========== STEP 1: Entry Classification ===========
+        # Determine if this is casual chat or needs manager processing
+        entry_classifier = get_entry_classifier()
+        classification = await entry_classifier.classify(message, user_context)
         
-        task_manager.update_progress(task_id, 10, "Manager agent analyzing query...")
+        logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
         
-        # Add step for manager start
-        session_db.add_step(
-            task_uid=task_uid,
-            session_id=conversation_id,
-            agent_name="manager_agent",
-            step_type=StepType.THINKING,
-            content={"status": "Analyzing query", "query": message[:100]}
-        )
-        
-        # Broadcast start via WebSocket (with task_uid for session linking)
+        # Broadcast classification result
         await ws_manager.broadcast_agent_activity({
-            "type": "agent_started",
-            "agent": "manager_agent",
+            "type": "entry_classification",
+            "agent": "entry_classifier",
             "task_id": task_id,
-            "task_uid": task_uid,
             "session_id": conversation_id,
-            "content": {"query": message[:100], "conversation_id": conversation_id},
+            "content": {
+                "is_casual": classification.is_casual,
+                "reason": classification.reason,
+                "route_to": "casual_chat_agent" if classification.is_casual else "manager_agent"
+            },
             "timestamp": datetime.now().isoformat()
         })
         
-        # Create task assignment (use task_uid for session linking)
-        task = TaskAssignment(
-            task_id=task_uid,  # Use session-linked UID
-            task_type="user_query",
-            description=message,
-            input_data={
-                "query": message,
-                "conversation_id": conversation_id,
+        task_manager.update_progress(task_id, 10, f"Routing to {'casual chat' if classification.is_casual else 'manager'}...")
+        
+        # =========== STEP 2: Route to Appropriate Agent ===========
+        if classification.is_casual:
+            # Route to Casual Chat Agent directly
+            from agents.core.casual_chat_agent import get_casual_chat_agent
+            casual_agent = get_casual_chat_agent()
+            
+            session_db.add_step(
+                task_uid=task_uid,
+                session_id=conversation_id,
+                agent_name="casual_chat_agent",
+                step_type=StepType.THINKING,
+                content={"status": "Processing casual chat", "query": message[:100]}
+            )
+            
+            await ws_manager.broadcast_agent_activity({
+                "type": "agent_started",
+                "agent": "casual_chat_agent",
+                "task_id": task_id,
                 "session_id": conversation_id,
+                "content": {"query": message[:100]},
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            task = TaskAssignment(
+                task_id=task_uid,
+                task_type="casual_response",
+                description=message,
+                input_data={
+                    "query": message,
+                    "chat_history": chat_history,
+                    "user_context": user_context
+                },
+                priority=1
+            )
+            
+            start_time = datetime.now()
+            result = await casual_agent.process_task(task)
+            processing_time = (datetime.now() - start_time).total_seconds()
+            agents_involved = ["entry_classifier", "casual_chat_agent"]
+            
+        else:
+            # Route to Manager Agent for planning-driven execution
+            manager_agent = registry.get_agent("manager_agent")
+            if not manager_agent:
+                raise Exception("Manager agent not available")
+        
+            task_manager.update_progress(task_id, 15, "Manager agent creating plan...")
+        
+            # Add step for manager start
+            session_db.add_step(
+                task_uid=task_uid,
+                session_id=conversation_id,
+                agent_name="manager_agent",
+                step_type=StepType.THINKING,
+                content={"status": "Creating execution plan", "query": message[:100]}
+            )
+        
+            # Broadcast start via WebSocket (with task_uid for session linking)
+            await ws_manager.broadcast_agent_activity({
+                "type": "agent_started",
+                "agent": "manager_agent",
+                "task_id": task_id,
                 "task_uid": task_uid,
-                "use_rag": use_rag,
-                "context": context,
-                "chat_history": chat_history,  # Include conversation history
-                "user_context": user_context,  # Cerebro personalization
-                "user_id": user_id
-            },
-            priority=1
-        )
+                "session_id": conversation_id,
+                "content": {"query": message[:100], "conversation_id": conversation_id},
+                "timestamp": datetime.now().isoformat()
+            })
         
-        task_manager.update_progress(task_id, 20, "Processing with agents...", ["manager_agent", "planning_agent"])
+            # Create task assignment (use task_uid for session linking)
+            task = TaskAssignment(
+                task_id=task_uid,  # Use session-linked UID
+                task_type="user_query",
+                description=message,
+                input_data={
+                    "query": message,
+                    "conversation_id": conversation_id,
+                    "session_id": conversation_id,
+                    "task_uid": task_uid,
+                    "use_rag": use_rag,
+                    "context": context,
+                    "chat_history": chat_history,  # Include conversation history
+                    "user_context": user_context,  # Cerebro personalization
+                    "user_id": user_id
+                },
+                priority=1
+            )
         
-        # Process through manager (this takes time)
-        start_time = datetime.now()
-        result = await manager_agent.process_task(task)
-        processing_time = (datetime.now() - start_time).total_seconds()
+            task_manager.update_progress(task_id, 20, "Executing plan...", ["manager_agent", "planning_agent"])
+        
+            # Process through manager (this takes time)
+            start_time = datetime.now()
+            result = await manager_agent.process_task(task)
+            processing_time = (datetime.now() - start_time).total_seconds()
+            agents_involved = result.get("agents_involved", ["manager_agent"])
+            if "entry_classifier" not in agents_involved:
+                agents_involved = ["entry_classifier"] + agents_involved
         
         task_manager.update_progress(task_id, 90, "Finalizing response...")
         
         # Extract response
         if isinstance(result, dict):
             response_text = result.get("response", result.get("content", str(result)))
-            agents_involved = result.get("agents_involved", ["manager_agent"])
             sources = result.get("sources", [])
         else:
             response_text = str(result)
-            agents_involved = ["manager_agent"]
             sources = []
         
         # Store in conversation history (legacy)
@@ -530,72 +603,105 @@ async def send_message(request: ChatRequest):
             task_uid=task_uid
         )
         
-        # === STEP 1: Send query to Manager Agent ===
-        logger.info(f"[CHAT] Sending query to Manager Agent: {request.message[:50]}...")
+        # === STEP 1: Entry Classification ===
+        logger.info(f"[CHAT] Entry classification for: {request.message[:50]}...")
         
-        # Get manager agent from registry
-        manager_agent = registry.get_agent("manager_agent")
-        if not manager_agent:
-            raise HTTPException(status_code=500, detail="Manager agent not available")
+        entry_classifier = get_entry_classifier()
+        classification = await entry_classifier.classify(request.message, user_context)
         
-        # Broadcast start
+        logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
+        
+        # Broadcast classification result
         await ws_manager.broadcast_agent_activity({
-            "type": "agent_started",
-            "agent": "manager_agent",
-            "source": "user",
-            "target": "manager_agent",
-            "content": {"query": request.message[:100], "conversation_id": conversation_id},
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
-        })
-        
-        # Create task for manager (include chat_history like async mode)
-        task = TaskAssignment(
-            task_id=message_id,
-            task_type="user_query",
-            description=request.message,
-            input_data={
-                "query": request.message,
-                "conversation_id": conversation_id,
-                "use_rag": request.use_rag,
-                "context": request.context,
-                "user_context": user_context,  # Cerebro personalization
-                "user_id": request.user_id,
-                "chat_history": chat_history
+            "type": "entry_classification",
+            "agent": "entry_classifier",
+            "session_id": conversation_id,
+            "content": {
+                "is_casual": classification.is_casual,
+                "reason": classification.reason,
+                "route_to": "casual_chat_agent" if classification.is_casual else "manager_agent"
             },
-            priority=1
-        )
-        
-        # Broadcast thinking
-        await ws_manager.broadcast_agent_activity({
-            "type": "thinking",
-            "agent": "manager_agent",
-            "source": "manager_agent",
-            "target": "planning_agent",
-            "content": {"status": "Analyzing query and routing to appropriate agents..."},
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
+            "timestamp": datetime.now().isoformat()
         })
         
-        # === STEP 2: Manager processes and routes task ===
-        # This will internally trigger planning, RAG, thinking, and validation agents
-        logger.info("[CHAT] Manager agent processing task...")
         start_time = datetime.now()
         
-        # Process through manager (this is async and will take time)
-        result = await manager_agent.process_task(task)
+        # === STEP 2: Route based on classification ===
+        if classification.is_casual:
+            # Route to Casual Chat Agent directly
+            from agents.core.casual_chat_agent import get_casual_chat_agent
+            casual_agent = get_casual_chat_agent()
+            
+            await ws_manager.broadcast_agent_activity({
+                "type": "agent_started",
+                "agent": "casual_chat_agent",
+                "source": "entry_classifier",
+                "target": "casual_chat_agent",
+                "content": {"query": request.message[:100], "conversation_id": conversation_id},
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            task = TaskAssignment(
+                task_id=message_id,
+                task_type="casual_response",
+                description=request.message,
+                input_data={
+                    "query": request.message,
+                    "chat_history": chat_history,
+                    "user_context": user_context
+                },
+                priority=1
+            )
+            
+            result = await casual_agent.process_task(task)
+            agents_involved = ["entry_classifier", "casual_chat_agent"]
+            
+        else:
+            # Route to Manager Agent for planning-driven execution
+            manager_agent = registry.get_agent("manager_agent")
+            if not manager_agent:
+                raise HTTPException(status_code=500, detail="Manager agent not available")
+            
+            await ws_manager.broadcast_agent_activity({
+                "type": "agent_started",
+                "agent": "manager_agent",
+                "source": "entry_classifier",
+                "target": "manager_agent",
+                "content": {"query": request.message[:100], "conversation_id": conversation_id},
+                "timestamp": datetime.now().isoformat(),
+                "priority": 1
+            })
+            
+            task = TaskAssignment(
+                task_id=message_id,
+                task_type="user_query",
+                description=request.message,
+                input_data={
+                    "query": request.message,
+                    "conversation_id": conversation_id,
+                    "use_rag": request.use_rag,
+                    "context": request.context,
+                    "user_context": user_context,
+                    "user_id": request.user_id,
+                    "chat_history": chat_history
+                },
+                priority=1
+            )
+            
+            result = await manager_agent.process_task(task)
+            agents_involved = result.get("agents_involved", ["manager_agent"])
+            if "entry_classifier" not in agents_involved:
+                agents_involved = ["entry_classifier"] + agents_involved
         
         processing_time = (datetime.now() - start_time).total_seconds()
-        logger.info(f"[CHAT] Manager agent completed in {processing_time:.2f}s")
+        logger.info(f"[CHAT] Completed in {processing_time:.2f}s")
         
         # Extract response from result
         if isinstance(result, dict):
             response_text = result.get("response", result.get("content", str(result)))
-            agents_involved = result.get("agents_involved", ["manager_agent"])
             sources = result.get("sources", [])
         else:
             response_text = str(result)
-            agents_involved = ["manager_agent"]
             sources = []
         
         # Add assistant message to in-memory history (legacy)

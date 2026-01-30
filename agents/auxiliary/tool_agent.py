@@ -264,7 +264,7 @@ class ToolAgent(BaseAgent):
     
     async def _select_tool(self, task: TaskAssignment) -> Dict[str, Any]:
         """Select the best tool for a task"""
-        task_description = task.input_data.get("task_description", task.context)
+        task_description = task.input_data.get("task_description", task.description)
         
         # Get tool descriptions
         tool_descriptions = "\n".join([
@@ -334,7 +334,7 @@ Return only valid JSON with the parameter values."""
         chain = prompt | self.llm
         
         result = await chain.ainvoke({
-            "task_description": task.context,
+            "task_description": task.description,
             "tool_name": tool_name,
             "parameters": json.dumps(tool_def.parameters)
         })

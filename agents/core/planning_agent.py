@@ -403,11 +403,129 @@ Create a corrected plan."""
         task_type = task.task_type
         
         if task_type == "create_plan":
+            return await self._create_plan_for_manager(task)
+        elif task_type == "create_plan_langgraph":
             return await self._create_plan_with_langgraph(task)
         elif task_type == "refine_plan":
             return await self._refine_plan(task)
         else:
-            return await self._create_plan_with_langgraph(task)
+            return await self._create_plan_for_manager(task)
+    
+    async def _create_plan_for_manager(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Create execution plan for Manager Agent V2.
+        
+        Returns plan in Todo format that Manager can execute directly.
+        """
+        query = task.input_data.get("query", task.description)
+        context = task.input_data.get("context", "")
+        user_context = task.input_data.get("user_context", "")
+        available_agents = task.input_data.get("available_agents", [])
+        
+        # Agent descriptions
+        agent_desc = "\n".join([
+            f"- {name}: {desc}" for name, desc in self.available_agents
+            if name in available_agents or not available_agents
+        ])
+        
+        prompt = ChatPromptTemplate.from_template(
+            """You are a task planner. Analyze this query and create an execution plan.
+
+Query: {query}
+{context_section}
+{user_context_section}
+
+Available Agents:
+{agent_desc}
+
+Create a plan with these guidelines:
+1. Break into minimal steps (1-5 steps usually)
+2. Each step should have: agent, task_type, title, description
+3. Specify dependencies if steps need to run in order
+4. For simple queries, just 1 step is fine
+
+Respond in JSON format:
+{{
+    "goal": "main goal",
+    "strategy": "brief strategy",
+    "complexity": "simple|medium|complex",
+    "todos": [
+        {{
+            "title": "step title",
+            "description": "what to do",
+            "agent": "agent_name",
+            "task_type": "task type (e.g., analyze, calculate, translate)",
+            "priority": "high|medium|low",
+            "depends_on": [],
+            "input_data": {{}}
+        }}
+    ]
+}}"""
+        )
+        
+        context_section = f"\nContext: {context}" if context else ""
+        user_context_section = f"\nUser preferences: {user_context}" if user_context else ""
+        
+        try:
+            chain = prompt | self.llm
+            result = await chain.ainvoke({
+                "query": query,
+                "context_section": context_section,
+                "user_context_section": user_context_section,
+                "agent_desc": agent_desc
+            })
+            
+            content = result.content if hasattr(result, 'content') else str(result)
+            
+            # Parse JSON
+            import json
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                plan_data = json.loads(json_match.group())
+                
+                # Add query to each todo's input_data
+                for todo in plan_data.get("todos", []):
+                    if "input_data" not in todo:
+                        todo["input_data"] = {}
+                    todo["input_data"]["query"] = query
+                    todo["input_data"]["user_context"] = user_context
+                
+                return {
+                    "success": True,
+                    "goal": plan_data.get("goal", query),
+                    "strategy": plan_data.get("strategy", "Direct execution"),
+                    "complexity": plan_data.get("complexity", "simple"),
+                    "todos": plan_data.get("todos", [])
+                }
+            else:
+                # Fallback to simple plan
+                return self._create_fallback_plan(query, user_context)
+                
+        except Exception as e:
+            logger.error(f"Error creating plan: {e}")
+            return self._create_fallback_plan(query, user_context)
+    
+    def _create_fallback_plan(self, query: str, user_context: str = "") -> Dict[str, Any]:
+        """Create a simple fallback plan"""
+        return {
+            "success": True,
+            "goal": query,
+            "strategy": "Direct response",
+            "complexity": "simple",
+            "todos": [{
+                "title": "Process query",
+                "description": query,
+                "agent": "thinking_agent",
+                "task_type": "analyze",
+                "priority": "medium",
+                "depends_on": [],
+                "input_data": {
+                    "query": query,
+                    "user_context": user_context
+                }
+            }]
+        }
     
     async def _create_plan_with_langgraph(self, task: TaskAssignment) -> Dict[str, Any]:
         """

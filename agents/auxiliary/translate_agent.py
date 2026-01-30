@@ -87,7 +87,7 @@ class TranslateAgent(BaseAgent):
     
     async def _translate(self, task: TaskAssignment) -> Dict[str, Any]:
         """Translate text to target language"""
-        text = task.input_data.get("text", task.context)
+        text = task.input_data.get("text", task.description)
         target_language = task.input_data.get("target_language", "English")
         source_language = task.input_data.get("source_language", "auto")
         preserve_formatting = task.input_data.get("preserve_formatting", True)
@@ -142,7 +142,7 @@ Translation:"""
     
     async def _detect_language(self, task: TaskAssignment) -> Dict[str, Any]:
         """Detect the language of text"""
-        text = task.input_data.get("text", task.context)
+        text = task.input_data.get("text", task.description)
         return await self._detect_language_internal(text)
     
     async def _detect_language_internal(self, text: str) -> Dict[str, Any]:
@@ -177,7 +177,7 @@ Language:"""
     
     async def _multi_translate(self, task: TaskAssignment) -> Dict[str, Any]:
         """Translate to multiple languages"""
-        text = task.input_data.get("text", task.context)
+        text = task.input_data.get("text", task.description)
         target_languages = task.input_data.get("target_languages", ["English", "Chinese"])
         
         translations = {}
@@ -210,7 +210,7 @@ Translation:"""
     
     async def _localize(self, task: TaskAssignment) -> Dict[str, Any]:
         """Localize content for a specific region"""
-        text = task.input_data.get("text", task.context)
+        text = task.input_data.get("text", task.description)
         target_locale = task.input_data.get("target_locale", "en-US")
         context = task.input_data.get("context", "general")
         

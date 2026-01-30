@@ -104,7 +104,7 @@ class CalculationAgent(BaseAgent):
     
     async def _calculate(self, task: TaskAssignment) -> Dict[str, Any]:
         """Perform a mathematical calculation"""
-        expression = task.input_data.get("expression", task.context)
+        expression = task.input_data.get("expression", task.description)
         show_steps = task.input_data.get("show_steps", True)
         
         try:
@@ -332,7 +332,7 @@ Provide only the numerical answer."""
     
     async def _solve_problem(self, task: TaskAssignment) -> Dict[str, Any]:
         """Solve a math problem described in natural language"""
-        problem = task.input_data.get("problem", task.context)
+        problem = task.input_data.get("problem", task.description)
         
         prompt = ChatPromptTemplate.from_template(
             """Solve the following mathematical problem step by step.

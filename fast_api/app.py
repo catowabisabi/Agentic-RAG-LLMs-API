@@ -49,6 +49,7 @@ async def create_agents():
     from agents.core.thinking_agent import ThinkingAgent
     from agents.core.roles_agent import RolesAgent
     from agents.core.casual_chat_agent import CasualChatAgent
+    from agents.core.entry_classifier import EntryClassifier
     
     from agents.auxiliary.data_agent import DataAgent
     from agents.auxiliary.tool_agent import ToolAgent
@@ -58,6 +59,7 @@ async def create_agents():
     from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
     
     # Register core agents
+    await registry.register_agent(EntryClassifier())  # First-line classifier
     await registry.register_agent(ManagerAgent())
     await registry.register_agent(RAGAgent())
     await registry.register_agent(MemoryAgent())
