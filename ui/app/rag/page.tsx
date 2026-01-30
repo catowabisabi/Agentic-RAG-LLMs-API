@@ -1,5 +1,5 @@
-import SmartRAGQuery from '../../components/SmartRAGQuery';
+import RAGPage from '../../components/RAGPage';
 
 export default function RAG() {
-  return <SmartRAGQuery />;
+  return <RAGPage />;
 }

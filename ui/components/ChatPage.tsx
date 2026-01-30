@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
 import { chatAPI, createWebSocket } from '../lib/api';
 
 interface Source {
@@ -85,6 +85,7 @@ export default function ChatPage() {
   const [wsConnected, setWsConnected] = useState(false);
   const [pendingInfo, setPendingInfo] = useState<string | null>(null);
   const [useAsyncMode, setUseAsyncMode] = useState(true); // Enable async mode by default
+  const [useRag, setUseRag] = useState(true); // Enable RAG by default
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({});
   const [isInterrupting, setIsInterrupting] = useState(false);
@@ -383,7 +384,8 @@ export default function ChatPage() {
     
     setIsInterrupting(true);
     try {
-      const response = await fetch(`http://localhost:1130/agents/interrupt/task/${currentTaskId}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1130';
+      const response = await fetch(`${apiUrl}/agents/interrupt/task/${currentTaskId}`, {
         method: 'POST'
       });
       
@@ -450,12 +452,13 @@ export default function ChatPage() {
         // ASYNC MODE: Submit task and poll for result
         // Task runs in background even if user leaves page
         // ============================================
-        setPendingInfo(`Submitting task... (async mode - runs in background)`);
+        setPendingInfo(`Submitting task... (async mode - runs in background)${useRag ? '' : ' [RAG disabled]'}`);
         
         const submitResponse = await chatAPI.sendMessage({
           message: messageToSend,
           conversation_id: currentSessionId || undefined,
-          async_mode: true
+          async_mode: true,
+          use_rag: useRag
         });
         
         const { task_id } = submitResponse.data;
@@ -556,7 +559,8 @@ export default function ChatPage() {
         const response = await chatAPI.sendMessage({
           message: messageToSend,
           conversation_id: currentSessionId || undefined,
-          async_mode: false
+          async_mode: false,
+          use_rag: useRag
         }, abortControllerRef.current.signal);
 
         const data = response.data;
@@ -923,6 +927,23 @@ export default function ChatPage() {
                 {useAsyncMode ? '🔄 Background Mode' : '⏳ Wait Mode'}
               </button>
               
+              {/* RAG toggle */}
+              <button
+                onClick={() => setUseRag(!useRag)}
+                className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
+                  useRag 
+                    ? 'bg-blue-900/50 text-blue-400 hover:bg-blue-900/70' 
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+                title={useRag 
+                  ? "RAG Enabled: AI will search knowledge bases for relevant context" 
+                  : "RAG Disabled: AI will respond without searching knowledge bases"
+                }
+              >
+                <Search className={`w-3 h-3 ${useRag ? 'text-blue-400' : 'text-gray-500'}`} />
+                {useRag ? '🔍 RAG On' : '💬 RAG Off'}
+              </button>
+              
               <button
                 onClick={clearCurrentChat}
                 className="text-xs text-gray-500 hover:text-red-400 flex items-center gap-1"
@@ -935,7 +956,7 @@ export default function ChatPage() {
           
           {/* Show mode info for empty chats */}
           {(!activeSession || messages.length === 0) && (
-            <div className="mt-2 flex justify-start">
+            <div className="mt-2 flex justify-start gap-2">
               <button
                 onClick={() => setUseAsyncMode(!useAsyncMode)}
                 className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
@@ -946,6 +967,23 @@ export default function ChatPage() {
               >
                 <span className={`w-2 h-2 rounded-full ${useAsyncMode ? 'bg-green-400' : 'bg-gray-500'}`} />
                 {useAsyncMode ? '🔄 Background Mode (safe to leave)' : '⏳ Wait Mode (stay on page)'}
+              </button>
+              
+              {/* RAG toggle for empty chats */}
+              <button
+                onClick={() => setUseRag(!useRag)}
+                className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
+                  useRag 
+                    ? 'bg-blue-900/50 text-blue-400 hover:bg-blue-900/70' 
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+                title={useRag 
+                  ? "RAG Enabled: AI will search knowledge bases" 
+                  : "RAG Disabled: AI will respond without searching"
+                }
+              >
+                <Search className={`w-3 h-3 ${useRag ? 'text-blue-400' : 'text-gray-500'}`} />
+                {useRag ? '🔍 RAG On' : '💬 RAG Off'}
               </button>
             </div>
           )}

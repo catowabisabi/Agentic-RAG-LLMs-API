@@ -758,7 +758,8 @@ export default function ChatPageV2() {
     
     setIsInterrupting(true);
     try {
-      const response = await fetch(`http://localhost:1130/agents/interrupt/task/${currentTaskId}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1130';
+      const response = await fetch(`${apiUrl}/agents/interrupt/task/${currentTaskId}`, {
         method: 'POST'
       });
       
