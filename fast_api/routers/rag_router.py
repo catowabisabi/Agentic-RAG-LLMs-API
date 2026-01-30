@@ -115,6 +115,7 @@ async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
     databases = vectordb_manager.list_databases()
     all_results = []
     database_counts = {}
+    databases_searched = []
     
     for db_info in databases:
         db_name = db_info.get("name")
@@ -122,26 +123,34 @@ async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
             continue
             
         try:
-            retriever = DocumentRetriever(collection_name=db_name)
-            results = retriever.retrieve(request.query, top_k=request.top_k)
+            # Use vectordb_manager.query instead of DocumentRetriever
+            result = await vectordb_manager.query(
+                query=request.query,
+                db_name=db_name,
+                n_results=request.top_k
+            )
+            
+            results = result.get("results", [])
+            databases_searched.append(db_name)
             
             # Add database info to each result
-            for result in results:
-                result["source_database"] = db_name
-                result["database_description"] = db_info.get("description", "")
-                all_results.append(result)
+            for r in results:
+                r["source_database"] = db_name
+                r["database_description"] = db_info.get("description", "")
+                all_results.append(r)
             
             database_counts[db_name] = len(results)
         except Exception as e:
             logger.warning(f"Error searching {db_name}: {e}")
             continue
     
-    # Sort by relevance score
-    all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+    # Sort by relevance score (lower distance = better)
+    all_results.sort(key=lambda x: x.get("distance", 999))
     
-    # Filter by threshold
+    # Filter by threshold if specified
     if request.threshold > 0:
-        all_results = [r for r in all_results if r.get("similarity_score", 0) >= request.threshold]
+        # Convert distance to similarity for threshold comparison
+        all_results = [r for r in all_results if (1 - r.get("distance", 1) / 2) >= request.threshold]
     
     # Limit total results
     all_results = all_results[:request.top_k * 3]
@@ -149,10 +158,10 @@ async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
     return {
         "query": request.query,
         "mode": "multi",
-        "searched_databases": list(database_counts.keys()),
+        "databases_searched": databases_searched,
         "database_counts": database_counts,
         "results": all_results,
-        "count": len(all_results)
+        "total_results": len(all_results)
     }
 
 

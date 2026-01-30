@@ -250,6 +250,14 @@ async def process_chat_task(
         entry_classifier = get_entry_classifier()
         classification = await entry_classifier.classify(message, user_context)
         
+        # Override classification if use_rag is True - force manager_agent for RAG queries
+        # This ensures RAG is used when explicitly requested
+        if use_rag and classification.is_casual:
+            logger.info(f"[Entry] Override: use_rag=True forces manager_agent (was: casual)")
+            classification.is_casual = False
+            classification.route_to = "manager_agent"
+            classification.reason = f"Forced to manager for RAG ({classification.reason})"
+        
         logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
         
         # Broadcast classification result
