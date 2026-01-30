@@ -688,7 +688,11 @@ async def send_message(request: ChatRequest):
                     "context": request.context,
                     "user_context": user_context,
                     "user_id": request.user_id,
-                    "chat_history": chat_history
+                    "chat_history": chat_history,
+                    # Intent routing info from EntryClassifier
+                    "intent": classification.intent,
+                    "handler": classification.handler,
+                    "matched_by": classification.matched_by
                 },
                 priority=1
             )

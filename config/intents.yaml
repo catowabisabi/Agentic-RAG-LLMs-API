@@ -51,13 +51,16 @@ intents:
     route_to: manager_agent
     handler: list_knowledge_bases
     patterns:
-      - "知識庫.*清單"
-      - "資料庫.*清單"
+      - "知識庫清單"
+      - "知識庫"
+      - "資料庫清單"
       - "有(什麼|咩|乜).*資料"
       - "有(沒有|冇).*資料"
       - "list.*knowledge"
       - "what data"
       - "available.*database"
+      - "有哪些.*庫"
+      - "database list"
     examples:
       - "你有沒有什麼資料"
       - "知識庫清單"

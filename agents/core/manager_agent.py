@@ -422,6 +422,8 @@ Format: category|reason"""
         handler = task.input_data.get("handler")
         matched_by = task.input_data.get("matched_by", "internal")
         
+        logger.info(f"[Manager] Received intent={intent}, handler={handler}, matched_by={matched_by}")
+        
         # If handler is provided, use handler-based routing (fast path)
         if handler:
             logger.info(f"[Manager] Handler-based routing: {handler} (intent: {intent}, matched_by: {matched_by})")
