@@ -1,0 +1,166 @@
+# =============================================================================
+# Intent Configuration - 意圖配置
+# =============================================================================
+# 修改這個文件就可以添加新意圖，不需要改代碼
+# Agent 會動態載入這個配置
+# =============================================================================
+
+# 版本
+version: "1.0"
+
+# =============================================================================
+# 意圖定義
+# =============================================================================
+intents:
+  # ----- Casual Chat (直接回應) -----
+  casual_chat:
+    description: "閒聊、問候、簡單社交互動"
+    route_to: casual_chat_agent
+    patterns:
+      - "^(hi|hello|hey|哈囉|你好|早安|晚安|午安)$"
+      - "^(bye|goodbye|再見|拜拜|掰掰)$"
+      - "^(thanks|thank you|謝謝|多謝|唔該)$"
+      - "how are you"
+      - "你好嗎"
+      - "what's up"
+      - "你叫什麼"
+      - "who are you"
+    examples:
+      - "你好"
+      - "Hello!"
+      - "謝謝你"
+
+  # ----- 系統能力查詢 -----
+  capability_query:
+    description: "詢問系統功能、能力"
+    route_to: casual_chat_agent
+    patterns:
+      - "你(有|能|可以).*(什麼|咩|乜)功能"
+      - "what can you do"
+      - "你能做什麼"
+      - "有什麼功能"
+      - "help"
+      - "幫助"
+    examples:
+      - "你有咩功能"
+      - "What can you do?"
+
+  # ----- 知識庫管理 -----
+  knowledge_inventory:
+    description: "查詢可用的知識庫/資料庫清單"
+    route_to: manager_agent
+    handler: list_knowledge_bases
+    patterns:
+      - "知識庫.*清單"
+      - "資料庫.*清單"
+      - "有(什麼|咩|乜).*資料"
+      - "有(沒有|冇).*資料"
+      - "list.*knowledge"
+      - "what data"
+      - "available.*database"
+    examples:
+      - "你有沒有什麼資料"
+      - "知識庫清單"
+      - "有咩資料庫"
+
+  # ----- 知識搜索 -----
+  knowledge_search:
+    description: "在知識庫中搜索特定內容"
+    route_to: manager_agent
+    handler: rag_search
+    patterns:
+      - "搜索|搜尋|search|find"
+      - "有沒有.*的資料"
+      - "關於.*的資訊"
+      - "查.*資料"
+    examples:
+      - "搜索 Python 教程"
+      - "有沒有 SolidWorks 的資料"
+
+  # ----- 計算 -----
+  calculation:
+    description: "數學計算、公式求解"
+    route_to: manager_agent
+    handler: calculation
+    patterns:
+      - "計算|calculate|算"
+      - "[0-9]+\\s*[+\\-*/]\\s*[0-9]+"
+      - "=\\s*\\?"
+      - "等於多少"
+      - "多少錢"
+    examples:
+      - "1+1=?"
+      - "計算 15% 的稅"
+
+  # ----- 翻譯 -----
+  translation:
+    description: "語言翻譯"
+    route_to: manager_agent
+    handler: translation
+    patterns:
+      - "翻譯|translate|譯"
+      - "用.*語.*說"
+      - "怎麼說"
+      - "in (english|chinese|japanese)"
+    examples:
+      - "翻譯成英文"
+      - "How do you say hello in Chinese?"
+
+  # ----- 總結 -----
+  summarization:
+    description: "內容摘要"
+    route_to: manager_agent
+    handler: summarization
+    patterns:
+      - "總結|summarize|摘要|summary"
+      - "重點是什麼"
+      - "簡述"
+    examples:
+      - "總結這篇文章"
+
+  # ----- 規劃 -----
+  planning:
+    description: "複雜任務需要規劃"
+    route_to: manager_agent
+    handler: planning
+    patterns:
+      - "計劃|plan|規劃"
+      - "怎麼做|how to"
+      - "步驟|steps"
+      - "幫我.*做"
+    examples:
+      - "幫我規劃一個項目"
+
+# =============================================================================
+# 標準輸出格式
+# =============================================================================
+output_format:
+  required_fields:
+    - response        # 主要回答
+    - status          # ok | error | escalate
+    - agents_involved # 參與的 agent 列表
+    - workflow        # 流程標籤
+  
+  optional_fields:
+    - sources         # RAG/工具來源
+    - reason          # 錯誤/升級原因
+    - steps           # 思考/計劃步驟 (供 UI 折疊顯示)
+    - duration_ms     # 處理時間
+    - metadata        # 其他元數據
+
+# =============================================================================
+# 動態意圖理解 (LLM fallback)
+# =============================================================================
+llm_fallback:
+  enabled: true
+  description: |
+    如果沒有匹配到任何模式，使用 LLM 理解意圖並決定路由。
+    這使得系統可以處理未預定義的新意圖。
+  
+  system_prompt: |
+    你是一個意圖分類器。根據用戶的輸入，判斷最適合的處理方式。
+    
+    可用的意圖類型：
+    {available_intents}
+    
+    如果不確定，返回 "general_query" 讓 manager 處理。

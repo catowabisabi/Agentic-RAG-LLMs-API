@@ -337,6 +337,7 @@ async def process_chat_task(
             })
         
             # Create task assignment (use task_uid for session linking)
+            # Pass intent/handler info from classification for handler-based routing
             task = TaskAssignment(
                 task_id=task_uid,  # Use session-linked UID
                 task_type="user_query",
@@ -350,7 +351,11 @@ async def process_chat_task(
                     "context": context,
                     "chat_history": chat_history,  # Include conversation history
                     "user_context": user_context,  # Cerebro personalization
-                    "user_id": user_id
+                    "user_id": user_id,
+                    # Intent routing info from EntryClassifier
+                    "intent": classification.intent,
+                    "handler": classification.handler,
+                    "matched_by": classification.matched_by
                 },
                 priority=1
             )

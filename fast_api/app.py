@@ -26,6 +26,7 @@ from fast_api.routers.rag_router import router as rag_router
 from fast_api.routers.chat_router import router as chat_router
 from fast_api.routers.session_router import router as session_router
 from fast_api.routers.memory_router import router as memory_router
+from fast_api.routers.intent_router import router as intent_router
 
 # Configure logging
 logging.basicConfig(
@@ -126,6 +127,7 @@ app.include_router(rag_router)
 app.include_router(chat_router)
 app.include_router(session_router)
 app.include_router(memory_router)
+app.include_router(intent_router)
 
 
 @app.get("/")

@@ -246,6 +246,97 @@ Format: category|reason"""
                 confidence=0.5
             )
     
+    async def _handle_knowledge_inventory(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Handle knowledge base inventory requests.
+        Lists all available knowledge bases with their details.
+        """
+        from services.vectordb_manager import get_vectordb_manager
+        
+        task_id = task.task_id
+        query = task.input_data.get("query", task.description)
+        chat_history = task.input_data.get("chat_history", [])
+        
+        logger.info(f"[Manager] Knowledge inventory request: {query[:50]}...")
+        
+        # Emit start event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.WORKING,
+                task_id=task_id,
+                message="Listing knowledge bases..."
+            )
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "thinking",
+            "agent": self.agent_name,
+            "source": self.agent_name,
+            "content": {"status": "Listing available knowledge bases"},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        
+        try:
+            vectordb_manager = get_vectordb_manager()
+            databases = vectordb_manager.list_databases()
+            
+            if not databases:
+                response_text = "目前沒有任何知識庫。您可以通過上傳文件來創建新的知識庫。"
+            else:
+                # Build a nice response
+                lines = ["## 📚 可用知識庫清單\n"]
+                for db in databases:
+                    name = db.get("name", "Unknown")
+                    description = db.get("description", "No description")
+                    doc_count = db.get("document_count", 0)
+                    created = db.get("created_at", "")[:10] if db.get("created_at") else ""
+                    
+                    lines.append(f"### 📁 **{name}**")
+                    if description:
+                        lines.append(f"- 描述: {description}")
+                    lines.append(f"- 文件數量: {doc_count}")
+                    if created:
+                        lines.append(f"- 創建日期: {created}")
+                    lines.append("")
+                
+                lines.append("\n---")
+                lines.append("💡 **提示**: 您可以詢問任何知識庫中的內容，例如：")
+                lines.append(f'- "搜尋 {databases[0]["name"]} 關於 XXX 的資料"')
+                lines.append('- "我的文件中有什麼關於 YYY 的內容？"')
+                
+                response_text = "\n".join(lines)
+            
+            await self.ws_manager.broadcast_agent_activity({
+                "type": "task_completed",
+                "agent": self.agent_name,
+                "source": self.agent_name,
+                "content": {"workflow": "knowledge_inventory", "db_count": len(databases)},
+                "timestamp": datetime.now().isoformat(),
+                "priority": 1
+            })
+            
+            return {
+                "response": response_text,
+                "agents_involved": ["manager_agent"],
+                "sources": [],
+                "workflow": "knowledge_inventory",
+                "metadata": {
+                    "databases": databases,
+                    "count": len(databases)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"[Manager] Knowledge inventory error: {e}")
+            return {
+                "response": f"抱歉，無法獲取知識庫清單：{str(e)}",
+                "agents_involved": ["manager_agent"],
+                "sources": [],
+                "workflow": "knowledge_inventory",
+                "error": str(e)
+            }
+    
     async def _handle_casual_chat(self, task: TaskAssignment) -> Dict[str, Any]:
         """Handle a casual chat message via the casual_chat_agent"""
         from agents.core.casual_chat_agent import get_casual_chat_agent
@@ -316,15 +407,73 @@ Format: category|reason"""
         Handle a user query through smart routing.
         
         Workflow:
-        1. Classify query type
-        2. Route to appropriate handler/agent
-        3. Return response via manager
+        1. Check if intent/handler provided from EntryClassifier (config-driven)
+        2. If handler exists, use handler-based routing (no extra classification needed)
+        3. Otherwise, fall back to internal classification
         """
         logger.info(f"[Manager] Handling user query: {task.description[:50]}...")
         
         query = task.input_data.get("query", task.description)
         use_rag = task.input_data.get("use_rag", True)
         task_id = task.task_id
+        
+        # Check for intent/handler from EntryClassifier (config-driven routing)
+        intent = task.input_data.get("intent")
+        handler = task.input_data.get("handler")
+        matched_by = task.input_data.get("matched_by", "internal")
+        
+        # If handler is provided, use handler-based routing (fast path)
+        if handler:
+            logger.info(f"[Manager] Handler-based routing: {handler} (intent: {intent}, matched_by: {matched_by})")
+            
+            # Emit start event
+            if HAS_EVENT_BUS and event_bus:
+                await event_bus.update_status(
+                    self.agent_name,
+                    AgentState.WORKING,
+                    task_id=task_id,
+                    message=f"Executing handler: {handler}"
+                )
+            
+            await self.ws_manager.broadcast_agent_activity({
+                "type": "thinking",
+                "agent": self.agent_name,
+                "source": self.agent_name,
+                "content": {
+                    "status": f"Intent: {intent}, Handler: {handler}",
+                    "matched_by": matched_by
+                },
+                "timestamp": datetime.now().isoformat(),
+                "priority": 1
+            })
+            
+            # Handler dispatch - map handler names from intents.yaml to methods
+            handler_map = {
+                # Knowledge
+                "list_knowledge_bases": self._handle_knowledge_inventory,
+                "knowledge_inventory": self._handle_knowledge_inventory,
+                "rag_search": self._handle_simple_rag_query,
+                "search_knowledge": self._handle_simple_rag_query,
+                # Processing
+                "calculation": self._handle_calculation,
+                "calculate": self._handle_calculation,
+                "translation": self._handle_translation,
+                "translate": self._handle_translation,
+                "summarization": self._handle_summarization,
+                "summarize": self._handle_summarization,
+                # Planning
+                "planning": self._handle_complex_query,
+                "plan_complex": self._handle_complex_query,
+                # General
+                "general_answer": self._handle_general_knowledge,
+                "casual_response": self._handle_casual_chat,
+            }
+            
+            handler_func = handler_map.get(handler)
+            if handler_func:
+                return await handler_func(task)
+            else:
+                logger.warning(f"[Manager] Unknown handler '{handler}', falling back to classification")
         
         # Emit start event
         if HAS_EVENT_BUS and event_bus:

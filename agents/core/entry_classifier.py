@@ -1,176 +1,90 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-Entry Classifier - 入口分類器
+Entry Classifier - 配置驅動的入口分類器
 =============================================================================
 
-這是系統的第一層分類器，只做一個決定：
-- Casual Chat → 直接發送給 Casual Chat Agent
-- Other → 發送給 Manager Agent 進行進一步規劃
+從 config/intents.yaml 載入意圖配置，動態路由請求。
+不需要改代碼就可以添加新意圖！
 
 =============================================================================
 """
 
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
 from agents.shared_services.message_protocol import TaskAssignment
-from config.config import Config
+from agents.shared_services.intent_router import get_intent_router, IntentMatch
+from agents.shared_services.standard_response import AgentResponse, ResponseStatus
 
 logger = logging.getLogger(__name__)
 
 
 class EntryClassification(BaseModel):
     """Entry classification result"""
-    is_casual: bool = Field(description="True if this is casual chat, False if needs manager")
+    is_casual: bool = Field(description="True if routes to casual_chat_agent")
+    intent: str = Field(description="Identified intent name")
+    route_to: str = Field(description="Target agent")
+    handler: Optional[str] = Field(default=None, description="Specific handler method")
     reason: str = Field(description="Brief reason for classification")
     confidence: float = Field(default=0.9, description="Confidence 0-1")
+    matched_by: str = Field(default="pattern", description="pattern | llm | default")
 
 
 class EntryClassifier(BaseAgent):
     """
-    入口分類器 - 系統的第一道門
+    配置驅動的入口分類器
     
     職責：
-    - 快速判斷用戶消息是否為閒聊
-    - 如果是閒聊 → Casual Chat Agent
-    - 如果不是 → Manager Agent (進行規劃和分派)
+    - 從 config/intents.yaml 載入意圖配置
+    - 使用模式匹配 + LLM 動態理解
+    - 路由到適當的 Agent
+    - 支持熱重載配置（不重啟服務）
     """
     
     def __init__(self, agent_name: str = "entry_classifier"):
         super().__init__(
             agent_name=agent_name,
             agent_role="Entry Classifier",
-            agent_description="First-line classifier to route casual vs task queries"
+            agent_description="Configuration-driven intent classifier and router"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.0,
-            api_key=self.config.OPENAI_API_KEY,
-            max_tokens=100
-        )
-        
-        # Casual patterns for fast-path (heuristic)
-        self.casual_patterns = self._load_casual_patterns()
-        
-        logger.info("EntryClassifier initialized")
-    
-    def _load_casual_patterns(self) -> set:
-        """Load casual chat patterns for fast-path matching"""
-        patterns = {
-            # === English ===
-            "hello", "hi", "hey", "hi there", "hello there", "howdy",
-            "good morning", "good afternoon", "good evening", "good night",
-            "what's up", "whats up", "sup", "yo",
-            "bye", "goodbye", "see you", "see ya", "later", "take care",
-            "thanks", "thank you", "thx", "ty", "appreciated",
-            "who are you", "what are you", "what's your name",
-            "what can you do", "what do you do", "how can you help",
-            "ok", "okay", "got it", "understood", "sure", "yes", "no",
-            "how are you", "how's it going", "nice to meet you",
-            "sorry", "my bad", "excuse me",
-            
-            # === 中文 (Mandarin) ===
-            "你好", "您好", "嗨", "哈囉", "早安", "午安", "晚安",
-            "再見", "再见", "拜拜", "保重",
-            "謝謝", "谢谢", "感謝", "多謝",
-            "你是誰", "你是谁", "你叫什麼", "你的名字",
-            "你有什麼功能", "你有什么功能", "你能做什麼", "你能做什么",
-            "你會什麼", "你会什么", "你可以做什麼",
-            "好", "好的", "了解", "知道了", "明白", "收到",
-            "你好嗎", "你好吗", "最近怎樣",
-            
-            # === 粵語 (Cantonese) ===
-            "你有咩功能", "你識咩", "你識做咩", "你會咩",
-            "你係邊個", "你叫咩名",
-            "多謝", "唔該", "拜拜", "早晨",
-            "點呀", "點樣", "幾好",
-        }
-        return patterns
-    
-    def _quick_check_casual(self, message: str) -> bool:
-        """Fast heuristic check for casual messages"""
-        msg_lower = message.lower().strip()
-        
-        # Direct pattern match
-        if msg_lower in self.casual_patterns:
-            return True
-        
-        # Prefix match
-        for pattern in self.casual_patterns:
-            if msg_lower.startswith(pattern + " ") or \
-               msg_lower.startswith(pattern + "!") or \
-               msg_lower.startswith(pattern + "?") or \
-               msg_lower.startswith(pattern + ","):
-                return True
-        
-        return False
+        # Use the shared intent router
+        self.router = get_intent_router()
+        logger.info(f"EntryClassifier initialized with {len(self.router.intents)} intents")
     
     async def classify(self, message: str, context: str = "") -> EntryClassification:
         """
-        Classify a message as casual or task-oriented.
+        Classify a message using configuration-driven routing.
         
         Args:
             message: User's message
             context: Optional context (chat history, user info)
             
         Returns:
-            EntryClassification with is_casual flag
+            EntryClassification with routing info
         """
-        # Fast path: heuristic check
-        if self._quick_check_casual(message):
-            return EntryClassification(
-                is_casual=True,
-                reason="Matches casual conversation pattern",
-                confidence=0.95
-            )
+        # Use the intent router
+        match: IntentMatch = self.router.match(message, context)
         
-        # LLM classification for ambiguous cases
-        prompt = ChatPromptTemplate.from_template(
-            """Classify this message as either CASUAL or TASK:
-
-CASUAL (return true):
-- Greetings, farewells, thanks
-- Questions about the AI itself ("what can you do", "who are you")
-- Simple chitchat, emotional expressions
-- Short confirmations or responses
-
-TASK (return false):
-- Questions requiring knowledge lookup
-- Requests to perform actions (calculate, translate, search, analyze)
-- Complex multi-step requests
-- Technical or domain-specific questions
-
-Message: "{message}"
-{context_section}
-
-Is this CASUAL chat? (true/false)"""
+        # Determine if it's casual
+        is_casual = match.route_to == "casual_chat_agent"
+        
+        logger.info(f"[Entry] Intent: {match.intent} -> {match.route_to} (by {match.matched_by})")
+        
+        return EntryClassification(
+            is_casual=is_casual,
+            intent=match.intent,
+            route_to=match.route_to,
+            handler=match.handler,
+            reason=f"Matched intent '{match.intent}' via {match.matched_by}",
+            confidence=match.confidence,
+            matched_by=match.matched_by
         )
-        
-        context_section = f"\nContext: {context}" if context else ""
-        
-        try:
-            chain = prompt | self.llm.with_structured_output(EntryClassification)
-            result = await chain.ainvoke({
-                "message": message,
-                "context_section": context_section
-            })
-            return result
-        except Exception as e:
-            logger.warning(f"Classification failed: {e}, defaulting to task")
-            return EntryClassification(
-                is_casual=False,
-                reason=f"Classification error: {e}",
-                confidence=0.5
-            )
     
     async def process_task(self, task: TaskAssignment) -> Dict[str, Any]:
         """Process a classification task"""
@@ -181,10 +95,31 @@ Is this CASUAL chat? (true/false)"""
         
         return {
             "is_casual": result.is_casual,
+            "intent": result.intent,
+            "route_to": result.route_to,
+            "handler": result.handler,
             "reason": result.reason,
             "confidence": result.confidence,
-            "route_to": "casual_chat_agent" if result.is_casual else "manager_agent"
+            "matched_by": result.matched_by
         }
+    
+    def reload_config(self) -> bool:
+        """Reload intent configuration without restart"""
+        return self.router.reload()
+    
+    def add_intent(self, name: str, config: Dict[str, Any]) -> bool:
+        """
+        Add a new intent dynamically.
+        
+        Example:
+            classifier.add_intent("weather", {
+                "description": "Weather queries",
+                "route_to": "manager_agent",
+                "handler": "weather_lookup",
+                "patterns": ["天氣", "weather"]
+            })
+        """
+        return self.router.add_intent(name, config)
 
 
 # Singleton
