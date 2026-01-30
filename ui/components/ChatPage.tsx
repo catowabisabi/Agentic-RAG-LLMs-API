@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
+import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import { chatAPI, createWebSocket } from '../lib/api';
 
 interface Source {
@@ -88,6 +88,8 @@ export default function ChatPage() {
   const [useRag, setUseRag] = useState(true); // Enable RAG by default
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({});
+  // Track which messages have expanded thinking steps (collapsed by default)
+  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [isInterrupting, setIsInterrupting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -139,11 +141,12 @@ export default function ChatPage() {
               }));
             }
             
-            // Capture thinking/plan steps
+            // Capture thinking/plan steps (including planning_result from backend)
             if (data.type === 'thinking' || data.type === 'plan_step' || 
                 data.type === 'agent_started' || data.type === 'task_assigned' ||
                 data.type === 'rag_query' || data.type === 'rag_result' ||
-                data.type === 'llm_call_start' || data.type === 'task_completed') {
+                data.type === 'llm_call_start' || data.type === 'task_completed' ||
+                data.type === 'planning_result' || data.type === 'task_rerouted') {
               const step: ThinkingStep = {
                 type: data.type,
                 agent: data.agent_name || data.agent || data.source || 'system',
@@ -159,9 +162,9 @@ export default function ChatPage() {
                   s.agent === step.agent
                 );
                 if (isDupe) return prev;
-                // Keep last 30 steps
+                // Keep last 50 steps for more visibility
                 const updated = [...prev, step];
-                return updated.slice(-30);
+                return updated.slice(-50);
               });
             }
           } catch (e) {
@@ -648,10 +651,13 @@ export default function ChatPage() {
       case 'task_assigned': return '📋';
       case 'thinking': return '💭';
       case 'plan_step': return '📝';
+      case 'planning_result': return '📊';
       case 'rag_query': return '🔍';
       case 'rag_result': return '📚';
       case 'llm_call_start': return '🤖';
       case 'task_completed': return '✅';
+      case 'task_rerouted': return '🔀';
+      case 'agent_started': return '🚀';
       default: return '▶️';
     }
   };
@@ -782,21 +788,45 @@ export default function ChatPage() {
                     </div>
                   </div>
 
-                  {/* Show thinking steps for this message */}
+                  {/* Show thinking steps for this message (COLLAPSIBLE) */}
                   {msg.thinking && msg.thinking.length > 0 && (
                     <div className="mt-2 ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg">
-                      <div className="flex items-center gap-2 text-xs text-purple-400 mb-2">
+                      <button 
+                        onClick={() => {
+                          setExpandedThinking(prev => {
+                            const next = new Set(prev);
+                            if (next.has(msg.id)) {
+                              next.delete(msg.id);
+                            } else {
+                              next.add(msg.id);
+                            }
+                            return next;
+                          });
+                        }}
+                        className="flex items-center gap-2 text-xs text-purple-400 hover:text-purple-300 w-full"
+                      >
+                        {expandedThinking.has(msg.id) ? (
+                          <ChevronDown className="w-3 h-3" />
+                        ) : (
+                          <ChevronRight className="w-3 h-3" />
+                        )}
                         <Brain className="w-3 h-3" />
-                        <span>Chain of Thought</span>
-                      </div>
-                      <div className="space-y-1">
-                        {msg.thinking.map((step, i) => (
-                          <div key={i} className="text-xs text-gray-400">
-                            <span className="text-purple-400">[{step.agent}]</span>
-                            <span className="ml-2">{formatThinkingContent(step.content)}</span>
-                          </div>
-                        ))}
-                      </div>
+                        <span>Chain of Thought ({msg.thinking.length} steps)</span>
+                        <span className="ml-auto text-gray-500 text-xs">
+                          {expandedThinking.has(msg.id) ? 'Click to collapse' : 'Click to expand'}
+                        </span>
+                      </button>
+                      {expandedThinking.has(msg.id) && (
+                        <div className="space-y-1 mt-2 pt-2 border-t border-purple-800/30">
+                          {msg.thinking.map((step, i) => (
+                            <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
+                              <span>{getStepIcon(step.type)}</span>
+                              <span className="text-purple-400 flex-shrink-0">[{step.agent}]</span>
+                              <span className="flex-1">{formatThinkingContent(step.content)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

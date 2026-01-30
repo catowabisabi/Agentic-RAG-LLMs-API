@@ -30,6 +30,10 @@ from services.vectordb_manager import vectordb_manager
 from services.task_manager import task_manager, TaskStatus
 from services.session_db import session_db, TaskStatus as DBTaskStatus, StepType
 
+# Cerebro Memory System
+from services.cerebro_memory import get_cerebro, MemoryType, MemoryImportance
+from agents.auxiliary.memory_capture_agent import process_message_for_memory, get_user_context_for_prompt
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -43,9 +47,11 @@ class ChatRequest(BaseModel):
     """Chat request"""
     message: str = Field(description="User message")
     conversation_id: Optional[str] = Field(default=None, description="Conversation ID")
+    user_id: Optional[str] = Field(default="default", description="User ID for personalization")
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context")
     use_rag: bool = Field(default=True, description="Whether to use RAG for context")
     async_mode: bool = Field(default=False, description="If True, returns task_id immediately and processes in background")
+    enable_memory: bool = Field(default=True, description="Enable personalized memory capture")
 
 
 class ChatResponse(BaseModel):
@@ -141,19 +147,54 @@ async def process_chat_task(
     message: str,
     conversation_id: str,
     use_rag: bool,
-    context: Dict[str, Any]
+    context: Dict[str, Any],
+    user_id: str = "default",
+    enable_memory: bool = True
 ) -> Dict[str, Any]:
     """
     Background task handler for chat processing.
     This runs independently of the frontend connection.
     
     Now integrated with SessionDB for persistent storage and recovery.
+    Also integrates with Cerebro memory system for personalization.
     """
     ws_manager = WebSocketManager()
     registry = AgentRegistry()
     
+    # =========== CEREBRO: Get User Context ===========
+    user_context = ""
+    if enable_memory:
+        try:
+            user_context = get_user_context_for_prompt(user_id, message)
+            if user_context:
+                logger.info(f"[Cerebro] Loaded user context for {user_id}: {len(user_context)} chars")
+        except Exception as e:
+            logger.warning(f"[Cerebro] Failed to load user context: {e}")
+    # ================================================
+    
     # Ensure session exists in database
     session = session_db.get_or_create_session(conversation_id, "Chat Session")
+    
+    # =========== LOAD CHAT HISTORY ===========
+    # Get previous messages from this session for context
+    previous_messages = session_db.get_session_messages(conversation_id, limit=config.MEMORY_WINDOW * 2)
+    chat_history = []
+    for msg in previous_messages:
+        if msg.get("role") == "user":
+            chat_history.append({"human": msg.get("content", "")})
+        elif msg.get("role") == "assistant":
+            # Attach to previous entry if exists
+            if chat_history and "assistant" not in chat_history[-1]:
+                chat_history[-1]["assistant"] = msg.get("content", "")
+            else:
+                chat_history.append({"assistant": msg.get("content", "")})
+    
+    # Keep only recent history (last N exchanges)
+    if len(chat_history) > config.MEMORY_WINDOW:
+        chat_history = chat_history[-config.MEMORY_WINDOW:]
+    
+    logger.info(f"[Chat] Loaded {len(chat_history)} history entries for session {conversation_id}")
+    # ==========================================
     
     # Create root task in database with session-linked UID
     db_task = session_db.create_task(
@@ -161,7 +202,14 @@ async def process_chat_task(
         agent_name="manager_agent",
         task_type="user_query",
         description=message[:200],
-        input_data={"query": message, "use_rag": use_rag, "context": context}
+        input_data={
+            "query": message,
+            "use_rag": use_rag,
+            "context": context,
+            "chat_history": chat_history,
+            "user_context": user_context,  # Cerebro personalization
+            "user_id": user_id
+        }
     )
     task_uid = db_task.task_uid
     
@@ -227,7 +275,10 @@ async def process_chat_task(
                 "session_id": conversation_id,
                 "task_uid": task_uid,
                 "use_rag": use_rag,
-                "context": context
+                "context": context,
+                "chat_history": chat_history,  # Include conversation history
+                "user_context": user_context,  # Cerebro personalization
+                "user_id": user_id
             },
             priority=1
         )
@@ -299,6 +350,23 @@ async def process_chat_task(
             },
             duration_ms=int(processing_time * 1000)
         )
+        
+        # =========== CEREBRO: Capture Memory (Background) ===========
+        if enable_memory:
+            try:
+                # Fire-and-forget memory capture (don't block response)
+                asyncio.create_task(
+                    process_message_for_memory(
+                        user_id=user_id,
+                        session_id=conversation_id,
+                        message=message,
+                        response=response_text
+                    )
+                )
+                logger.debug(f"[Cerebro] Memory capture triggered for user {user_id}")
+            except Exception as mem_error:
+                logger.warning(f"[Cerebro] Memory capture failed: {mem_error}")
+        # ============================================================
         
         # Broadcast completion (with session info)
         await ws_manager.broadcast_agent_activity({
@@ -391,7 +459,9 @@ async def send_message(request: ChatRequest):
                 "message": request.message,
                 "conversation_id": conversation_id,
                 "use_rag": request.use_rag,
-                "context": request.context
+                "context": request.context,
+                "user_id": request.user_id,
+                "enable_memory": request.enable_memory
             }
         )
         
@@ -403,7 +473,9 @@ async def send_message(request: ChatRequest):
                 message=request.message,
                 conversation_id=conversation_id,
                 use_rag=request.use_rag,
-                context=request.context
+                context=request.context,
+                user_id=request.user_id,
+                enable_memory=request.enable_memory
             )
         )
         
@@ -418,8 +490,46 @@ async def send_message(request: ChatRequest):
     
     # ============================================
     # SYNC MODE: Wait for response (original behavior)
+    # Now also persists to session_db for consistency
     # ============================================
     try:
+        # Ensure session exists in database (same as async mode)
+        session = session_db.get_or_create_session(conversation_id, "Chat Session")
+        
+        # =========== CEREBRO: Get User Context ===========
+        user_context = ""
+        if request.enable_memory:
+            try:
+                user_context = get_user_context_for_prompt(request.user_id, request.message)
+                if user_context:
+                    logger.info(f"[Cerebro] Loaded user context for {request.user_id}: {len(user_context)} chars")
+            except Exception as e:
+                logger.warning(f"[Cerebro] Failed to load user context: {e}")
+        # ================================================
+        
+        # Load chat history from session_db
+        previous_messages = session_db.get_session_messages(conversation_id, limit=config.MEMORY_WINDOW * 2)
+        chat_history = []
+        for msg in previous_messages:
+            if msg.get("role") == "user":
+                chat_history.append({"human": msg.get("content", "")})
+            elif msg.get("role") == "assistant":
+                if chat_history and "assistant" not in chat_history[-1]:
+                    chat_history[-1]["assistant"] = msg.get("content", "")
+                else:
+                    chat_history.append({"assistant": msg.get("content", "")})
+        if len(chat_history) > config.MEMORY_WINDOW:
+            chat_history = chat_history[-config.MEMORY_WINDOW:]
+        
+        # Store user message in database
+        task_uid = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{conversation_id}_sync"
+        session_db.add_message(
+            session_id=conversation_id,
+            role="user",
+            content=request.message,
+            task_uid=task_uid
+        )
+        
         # === STEP 1: Send query to Manager Agent ===
         logger.info(f"[CHAT] Sending query to Manager Agent: {request.message[:50]}...")
         
@@ -439,7 +549,7 @@ async def send_message(request: ChatRequest):
             "priority": 1
         })
         
-        # Create task for manager
+        # Create task for manager (include chat_history like async mode)
         task = TaskAssignment(
             task_id=message_id,
             task_type="user_query",
@@ -448,7 +558,10 @@ async def send_message(request: ChatRequest):
                 "query": request.message,
                 "conversation_id": conversation_id,
                 "use_rag": request.use_rag,
-                "context": request.context
+                "context": request.context,
+                "user_context": user_context,  # Cerebro personalization
+                "user_id": request.user_id,
+                "chat_history": chat_history
             },
             priority=1
         )
@@ -485,7 +598,7 @@ async def send_message(request: ChatRequest):
             agents_involved = ["manager_agent"]
             sources = []
         
-        # Add assistant message to history
+        # Add assistant message to in-memory history (legacy)
         conversations[conversation_id].append({
             "id": str(uuid.uuid4()),
             "role": "assistant",
@@ -494,6 +607,34 @@ async def send_message(request: ChatRequest):
             "sources": sources,
             "processing_time": processing_time
         })
+        
+        # Store assistant message in database (NEW - sync with async mode)
+        session_db.add_message(
+            session_id=conversation_id,
+            role="assistant",
+            content=response_text,
+            task_uid=task_uid,
+            agents_involved=agents_involved,
+            sources=sources,
+            metadata={"processing_time": processing_time}
+        )
+        
+        # =========== CEREBRO: Capture Memory (Background) ===========
+        if request.enable_memory:
+            try:
+                # Fire-and-forget memory capture (don't block response)
+                asyncio.create_task(
+                    process_message_for_memory(
+                        user_id=request.user_id,
+                        session_id=conversation_id,
+                        message=request.message,
+                        response=response_text
+                    )
+                )
+                logger.debug(f"[Cerebro] Memory capture triggered for user {request.user_id}")
+            except Exception as mem_error:
+                logger.warning(f"[Cerebro] Memory capture failed: {mem_error}")
+        # ============================================================
         
         # Broadcast completion
         await ws_manager.broadcast_agent_activity({

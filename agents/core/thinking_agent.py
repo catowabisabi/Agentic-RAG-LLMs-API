@@ -92,15 +92,31 @@ class ThinkingAgent(BaseAgent):
         """Perform deep reasoning on a query"""
         query = task.input_data.get("query", task.description)
         context = task.input_data.get("context", "")
+        chat_history = task.input_data.get("chat_history", [])
+        
+        # Format chat history for context
+        history_context = ""
+        if chat_history:
+            history_parts = []
+            for exchange in chat_history[-5:]:  # Last 5 exchanges
+                if "human" in exchange:
+                    history_parts.append(f"User: {exchange['human']}")
+                if "assistant" in exchange:
+                    history_parts.append(f"Assistant: {exchange['assistant']}")
+            if history_parts:
+                history_context = "\n=== Previous Conversation ===\n" + "\n".join(history_parts) + "\n=== End Previous Conversation ===\n\n"
         
         # Get RAG context if available
-        rag_context = ""
-        if hasattr(self, '_rag_result') and self._rag_result.get("should_use"):
+        rag_context = task.input_data.get("rag_context", "")
+        if not rag_context and hasattr(self, '_rag_result') and self._rag_result.get("should_use"):
             docs = self._rag_result.get("documents", [])
             rag_context = "\n\n".join([
                 f"Document {i+1}:\n{doc.get('content', '')}"
                 for i, doc in enumerate(docs[:3])
             ])
+        
+        # Combine all context
+        full_context = history_context + (rag_context or context)
         
         # Stream initial thinking
         await self.stream_to_frontend(
@@ -142,20 +158,20 @@ class ThinkingAgent(BaseAgent):
         
         reasonings = []
         for i, comp in enumerate(components):
-            reasoning = await self._step_reason(comp, context + rag_context)
+            reasoning = await self._step_reason(comp, full_context)
             reasonings.append(reasoning)
             await self.stream_to_frontend(
                 f"   Component {i+1}: {reasoning[:200]}...\n",
                 12 + i
             )
         
-        # Step 4: Synthesize conclusion
+        # Step 4: Synthesize conclusion (include chat history context)
         await self.stream_to_frontend(
             "\n✨ Step 4: Synthesizing conclusion...\n",
             20
         )
         
-        conclusion = await self._step_conclude(query, reasonings)
+        conclusion = await self._step_conclude(query, reasonings, history_context)
         await self.stream_to_frontend(
             f"\n📌 Conclusion:\n{conclusion}\n",
             21
@@ -229,17 +245,17 @@ Your reasoning (2-4 sentences):"""
         })
         return result.content.strip()
     
-    async def _step_conclude(self, query: str, reasonings: List[str]) -> str:
+    async def _step_conclude(self, query: str, reasonings: List[str], history_context: str = "") -> str:
         """Synthesize final conclusion"""
         prompt = ChatPromptTemplate.from_template(
-            """Based on the reasoning about each component, synthesize a final answer.
-
+            """Based on the reasoning about each component and conversation history, synthesize a final answer.
+{history_context}
 Original Question: {query}
 
 Component Reasonings:
 {reasonings}
 
-Provide a comprehensive, well-reasoned answer:"""
+Provide a comprehensive, well-reasoned answer that takes into account the conversation context:"""
         )
         
         reasonings_text = "\n".join([
@@ -249,7 +265,8 @@ Provide a comprehensive, well-reasoned answer:"""
         chain = prompt | self.llm
         result = await chain.ainvoke({
             "query": query,
-            "reasonings": reasonings_text
+            "reasonings": reasonings_text,
+            "history_context": history_context
         })
         return result.content.strip()
     

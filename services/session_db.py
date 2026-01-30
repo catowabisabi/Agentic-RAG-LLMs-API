@@ -188,7 +188,7 @@ class SessionDatabase:
     """
     SQLite-based session database.
     
-    Thread-safe singleton pattern.
+    Thread-safe singleton pattern with connection pooling.
     """
     
     _instance = None
@@ -211,32 +211,51 @@ class SessionDatabase:
         # Ensure directory exists
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Thread-local connections
+        # Thread-local connections for thread safety
         self._local = threading.local()
+        
+        # Connection pool lock for safe concurrent access
+        self._pool_lock = threading.Lock()
         
         # Initialize database
         self._init_db()
         
         # Task sequence counter per session
         self._sequence_counters: Dict[str, int] = {}
+        self._counter_lock = threading.Lock()
         
         logger.info(f"SessionDatabase initialized at {self.db_path}")
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get thread-local database connection"""
+        """Get thread-local database connection with proper settings"""
         if not hasattr(self._local, 'connection') or self._local.connection is None:
-            self._local.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._local.connection.row_factory = sqlite3.Row
+            # Use timeout and WAL mode for better concurrency
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=30.0,  # Wait up to 30 seconds for locks
+                check_same_thread=False,
+                isolation_level='DEFERRED'
+            )
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode for better concurrent read/write
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")  # 30 second busy timeout
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.connection = conn
         return self._local.connection
     
     @contextmanager
     def _cursor(self):
-        """Context manager for database cursor"""
+        """Context manager for database cursor with proper locking"""
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             yield cursor
             conn.commit()
+        except sqlite3.OperationalError as e:
+            conn.rollback()
+            logger.warning(f"SQLite operational error (retrying): {e}")
+            raise e
         except Exception as e:
             conn.rollback()
             raise e

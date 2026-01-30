@@ -307,11 +307,38 @@ class VectorDBManager:
             )
             self._clients[db_name] = client
             
-            # Get or create documents collection
+            # Get the correct collection - check metadata or find the one with documents
+            collection_names = db_info.get("collections", ["documents"])
+            collection_name = collection_names[0] if collection_names else "documents"
+            
+            # Try to get the collection with documents
             try:
-                self._collections[db_name] = client.get_collection("documents")
-            except:
-                self._collections[db_name] = client.create_collection("documents")
+                # First try the collection name from metadata
+                collection = client.get_collection(collection_name)
+                if collection.count() > 0:
+                    self._collections[db_name] = collection
+                    logger.info(f"Using collection '{collection_name}' for {db_name} ({collection.count()} docs)")
+                else:
+                    # Try to find a collection with documents
+                    for coll in client.list_collections():
+                        if coll.count() > 0:
+                            self._collections[db_name] = coll
+                            logger.info(f"Found collection '{coll.name}' with {coll.count()} docs for {db_name}")
+                            break
+                    else:
+                        # Fall back to the named collection
+                        self._collections[db_name] = collection
+            except Exception as e:
+                logger.warning(f"Error getting collection for {db_name}: {e}")
+                # Try to find any collection with documents
+                for coll in client.list_collections():
+                    if coll.count() > 0:
+                        self._collections[db_name] = coll
+                        logger.info(f"Fallback: using collection '{coll.name}' for {db_name}")
+                        break
+                else:
+                    # Create documents collection as last resort
+                    self._collections[db_name] = client.get_or_create_collection("documents")
         
         return self._clients[db_name]
     
@@ -533,17 +560,36 @@ Summary:"""
         Args:
             query: Query string
             db_name: Database to query (uses active if not specified)
-            n_results: Number of results
+            n_results: Number of results (must be > 0)
             filter_metadata: Metadata filters
             
         Returns:
             Query results
         """
+        # Validate n_results
+        if n_results < 1:
+            n_results = 1
+            logger.warning(f"n_results must be >= 1, defaulting to 1")
+        
         target_db = db_name or self._active_db
         if not target_db:
             raise ValueError("No database specified and no active database set")
         
         collection = self._get_collection(target_db)
+        
+        # Check if collection has documents
+        doc_count = collection.count()
+        if doc_count == 0:
+            logger.warning(f"Collection {target_db} is empty")
+            return {
+                "database": target_db,
+                "query": query,
+                "results": [],
+                "total_results": 0
+            }
+        
+        # Adjust n_results if it exceeds document count
+        n_results = min(n_results, doc_count)
         
         # Generate query embedding
         query_embedding = await asyncio.to_thread(

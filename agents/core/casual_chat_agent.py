@@ -23,6 +23,7 @@ from datetime import datetime
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
 from agents.shared_services.message_protocol import TaskAssignment
@@ -37,6 +38,12 @@ except ImportError:
 from config.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+class CapabilityCheck(BaseModel):
+    """Result of checking if the query is within casual chat capabilities."""
+    can_handle: bool = Field(description="True if this is chitchat/persona/social. False if it requires factual lookup/tools/technical reasoning.")
+    reason: str = Field(description="Brief reason for the decision.")
 
 
 class CasualChatAgent(BaseAgent):
@@ -71,6 +78,7 @@ Guidelines:
 - Match the user's energy and tone
 - If asked about yourself, you're an AI assistant that helps with knowledge and tasks
 - Don't redirect to other topics unless asked
+- Take into account the conversation history if provided
 
 Examples:
 User: "Hello!"
@@ -78,18 +86,57 @@ Assistant: "Hey there! How can I help you today?"
 
 User: "Thanks for your help!"
 Assistant: "You're welcome! Feel free to ask if you need anything else."
-
-User: "What's your name?"
-Assistant: "I'm an AI assistant - you can call me whatever you like! How can I help?"
 """
         
         self.chat_prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
-            ("human", "{message}")
+            ("human", "{history_context}{message}")
         ])
         
         logger.info("CasualChatAgent initialized")
     
+    async def _check_capabilities(self, query: str) -> CapabilityCheck:
+        """
+        Ask the Classifier Agent if this query fits the 'Casual Agent' persona.
+        """
+        # Use the centralized Classifier Agent
+        from agents.auxiliary.classifier_agent import ClassifierAgent
+        
+        classifier = ClassifierAgent()
+        
+        criterion = """
+        Is this query purely 'Casual Chat' (chitchat, greetings, social, emotional connection)?
+        
+        YES criteria (Return True):
+        - Greetings ("Hi", "How are you?")
+        - Social interactions ("You are funny", "I'm sad")
+        - Simple identity questions ("Who are you?")
+        
+        NO criteria (Return False - Technical/Knowledge/Task):
+        - "What data do you have?"
+        - "Can you analyze this?"
+        - "How do I use python?"
+        - "Search for X"
+        - "Plan a trip"
+        - Requests to perform specific tasks or look up info.
+        """
+        
+        try:
+            # Use the shared classifier
+            result = await classifier.classify(
+                content=query,
+                criterion=criterion,
+                context="User is interacting with a Casual Chat Agent. We need to decide if we should handle it or escalate to a specialist."
+            )
+            
+            return CapabilityCheck(
+                can_handle=result.get("decision", False),
+                reason=result.get("reason", "Classifier decision")
+            )
+        except Exception as e:
+            logger.error(f"Capability check with ClassifierAgent failed: {e}")
+            return CapabilityCheck(can_handle=False, reason=f"Check failed: {e}")
+
     async def process_task(self, task: TaskAssignment) -> Dict[str, Any]:
         """
         Process a casual chat message.
@@ -102,8 +149,37 @@ Assistant: "I'm an AI assistant - you can call me whatever you like! How can I h
         """
         task_id = task.task_id
         message = task.input_data.get("query", task.description)
+        chat_history = task.input_data.get("chat_history", [])
         
-        logger.info(f"[CasualChat] Processing: {message[:50]}...")
+        logger.info(f"[CasualChat] Processing: {message[:50]}... (history: {len(chat_history)} entries)")
+
+        # --- STEP 1: Capability Check ---
+        # Only check if it's not obviously trivial (heuristic fallback or override can go here)
+        # For now, we trust the LLM check.
+        capability = await self._check_capabilities(message)
+        
+        if not capability.can_handle:
+            logger.info(f"[CasualChat] Escalating: {capability.reason}")
+            return {
+                "status": "escalate",
+                "reason": capability.reason,
+                "original_query": message,
+                "agents_involved": [self.agent_name],
+                "workflow": "casual_chat_escalation"
+            }
+        # --------------------------------
+        
+        # Format chat history for context
+        history_context = ""
+        if chat_history:
+            history_parts = []
+            for exchange in chat_history[-3:]:  # Last 3 exchanges for casual chat
+                if "human" in exchange:
+                    history_parts.append(f"User: {exchange['human']}")
+                if "assistant" in exchange:
+                    history_parts.append(f"Assistant: {exchange['assistant']}")
+            if history_parts:
+                history_context = "[Previous conversation]\n" + "\n".join(history_parts) + "\n[Current message]\n"
         
         start_time = datetime.now()
         
@@ -125,7 +201,7 @@ Assistant: "I'm an AI assistant - you can call me whatever you like! How can I h
         try:
             # Generate response
             chain = self.chat_prompt | self.llm
-            result = await chain.ainvoke({"message": message})
+            result = await chain.ainvoke({"message": message, "history_context": history_context})
             response_text = result.content if hasattr(result, 'content') else str(result)
             
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -213,16 +289,11 @@ Assistant: "I'm an AI assistant - you can call me whatever you like! How can I h
         
         # Check if message matches or starts with casual pattern
         for pattern in casual_patterns:
-            if message_lower == pattern or message_lower.startswith(pattern + " ") or message_lower.startswith(pattern + "!") or message_lower.startswith(pattern + "?") or message_lower.startswith(pattern + ","):
+            if message_lower == pattern or message_lower.startswith(pattern + " ") or message_lower.startswith(pattern + "!") or message_lower.startswith(pattern + "?") or message_lower.startswith(pattern + ",") or message_lower.startswith(pattern + "."):
                 return True
         
-        # Very short messages (1-3 words) are often casual
-        word_count = len(message.split())
-        if word_count <= 3 and len(message) < 30:
-            # But not if they look like a query
-            query_indicators = ["what", "how", "why", "when", "where", "which", "can you", "could you", "tell me", "explain", "describe", "help me"]
-            if not any(message_lower.startswith(q) for q in query_indicators):
-                return True
+        # NOTE: Removed length-based heuristic as it causes false positives for short queries 
+        # (especially in non-English languages or specific technical terms like "rag status")
         
         return False
 

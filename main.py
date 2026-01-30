@@ -38,8 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def create_agents():
-    """Create and register all agents"""
+async def create_agents():
+    """Create and register all agents (async version)"""
     from agents.shared_services.agent_registry import AgentRegistry
     
     registry = AgentRegistry()
@@ -53,6 +53,7 @@ def create_agents():
     from agents.core.planning_agent import PlanningAgent
     from agents.core.thinking_agent import ThinkingAgent
     from agents.core.roles_agent import RolesAgent
+    from agents.core.casual_chat_agent import CasualChatAgent
     
     # Import auxiliary agents
     from agents.auxiliary.data_agent import DataAgent
@@ -61,24 +62,25 @@ def create_agents():
     from agents.auxiliary.translate_agent import TranslateAgent
     from agents.auxiliary.calculation_agent import CalculationAgent
     
-    # Register core agents
+    # Register core agents (await async method)
     logger.info("Registering core agents...")
-    registry.register_agent(ManagerAgent())
-    registry.register_agent(RAGAgent())
-    registry.register_agent(MemoryAgent())
-    registry.register_agent(NotesAgent())
-    registry.register_agent(ValidationAgent())
-    registry.register_agent(PlanningAgent())
-    registry.register_agent(ThinkingAgent())
-    registry.register_agent(RolesAgent())
+    await registry.register_agent(ManagerAgent())
+    await registry.register_agent(RAGAgent())
+    await registry.register_agent(MemoryAgent())
+    await registry.register_agent(NotesAgent())
+    await registry.register_agent(ValidationAgent())
+    await registry.register_agent(PlanningAgent())
+    await registry.register_agent(ThinkingAgent())
+    await registry.register_agent(RolesAgent())
+    await registry.register_agent(CasualChatAgent())
     
     # Register auxiliary agents
     logger.info("Registering auxiliary agents...")
-    registry.register_agent(DataAgent())
-    registry.register_agent(ToolAgent())
-    registry.register_agent(SummarizeAgent())
-    registry.register_agent(TranslateAgent())
-    registry.register_agent(CalculationAgent())
+    await registry.register_agent(DataAgent())
+    await registry.register_agent(ToolAgent())
+    await registry.register_agent(SummarizeAgent())
+    await registry.register_agent(TranslateAgent())
+    await registry.register_agent(CalculationAgent())
     
     logger.info(f"Registered {len(registry._agents)} agents")
     
@@ -165,10 +167,14 @@ async def run_mcp_server():
     """Run the MCP server"""
     logger.info("Starting MCP server...")
     
-    from mcp.server import MCPAgentServer
-    
-    server = MCPAgentServer()
-    await server.run()
+    try:
+        from mcp.server import MCPAgentServer
+        server = MCPAgentServer()
+        await server.run()
+    except ImportError as e:
+        logger.warning(f"MCP module not available: {e}. Skipping MCP server.")
+    except Exception as e:
+        logger.error(f"MCP server error: {e}")
 
 
 async def run_both_servers(config: Config):

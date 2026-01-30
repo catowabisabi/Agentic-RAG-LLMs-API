@@ -177,11 +177,12 @@ class ManagerAgent(BaseAgent):
         classification_prompt = ChatPromptTemplate.from_template(
             """Classify this user query into one of three categories:
 
-1. casual_chat: Greetings, small talk, thanks, farewells, simple questions about the AI itself
-   Examples: "Hello", "How are you?", "Thanks!", "What's your name?", "Goodbye"
+1. casual_chat: Greetings, small talk, thanks, farewells
+   Examples: "Hello", "How are you?", "Thanks!", "Goodbye"
+   NOTE: Questions about the AI's capabilities, functions, available tools, or data are NOT casual chat.
 
-2. simple_rag: Direct knowledge questions that can be answered with a single database lookup
-   Examples: "What is X?", "How does Y work?", "Explain Z", "Tell me about..."
+2. simple_rag: Direct knowledge questions, definitions, or questions about the AI's available data/knowledge
+   Examples: "What is X?", "How does Y work?", "What databases do you have?", "What can you do?", "What is in RAG?"
 
 3. complex_planning: Multi-step queries requiring planning, comparison, analysis, or combining multiple sources
    Examples: "Compare X and Y", "What are the steps to...", "Analyze...", "Create a plan for..."
@@ -251,6 +252,26 @@ Format: category|reason"""
         casual_agent = get_casual_chat_agent()
         result = await casual_agent.process_task(task)
         
+        # Check for Escalation (if Casual Chat declined to answer)
+        if result.get("status") == "escalate":
+            reason = result.get("reason", "Unknown")
+            logger.info(f"[Manager] Casual Chat escalated query: {reason}. Rerouting to Simple RAG.")
+            
+            # Notify UI of rerouting
+            await self.ws_manager.broadcast_agent_activity({
+                "type": "task_rerouted",
+                "agent": "manager_agent",
+                "source": "casual_chat_agent",
+                "target": "rag_agent",
+                "content": {"reason": reason},
+                "timestamp": datetime.now().isoformat(),
+                "priority": 1
+            })
+            
+            # Re-route to Simple RAG (or Thinking Agent if needed, but RAG is safer default for "what can you do")
+            # We treat it as if it was classified as simple_rag originally
+            return await self._handle_simple_rag(task, use_rag=True)
+
         await self.ws_manager.broadcast_agent_activity({
             "type": "task_completed",
             "agent": "casual_chat_agent",
@@ -502,8 +523,44 @@ Answer:"""
             await event_bus.acknowledge_interrupt(self.agent_name, task_id)
             return {"response": "Task was interrupted", "status": "interrupted", "agents_involved": agents_involved}
         
-        # Simulate planning time (1-2 seconds)
-        await asyncio.sleep(1.5)
+        # === ACTUAL PLANNING LOGIC ===
+        # Get the planning agent and create a real plan
+        import time
+        planning_start = time.time()
+        
+        planning_agent = self.registry.get_agent("planning_agent")
+        if planning_agent:
+            try:
+                plan_task = TaskAssignment(
+                    task_id=f"{task_id}_plan",
+                    task_type="create_plan",
+                    description=f"Create execution plan for: {query}",
+                    input_data={"query": query, "use_rag": use_rag},
+                    priority=1
+                )
+                plan_result = await planning_agent.process_task(plan_task)
+                planning_time_ms = int((time.time() - planning_start) * 1000)
+                
+                # Broadcast planning result (collapsible in UI)
+                await self.ws_manager.broadcast_agent_activity({
+                    "type": "planning_result",
+                    "agent": "planning_agent",
+                    "source": "planning_agent",
+                    "target": self.agent_name,
+                    "content": {
+                        "plan": plan_result.get("plan", {}),
+                        "planning_time_ms": planning_time_ms,
+                        "collapsible": True
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                    "priority": 1
+                })
+                logger.info(f"[Manager] Planning completed in {planning_time_ms}ms")
+            except Exception as e:
+                logger.warning(f"[Manager] Planning failed, continuing without plan: {e}")
+                planning_time_ms = int((time.time() - planning_start) * 1000)
+        else:
+            planning_time_ms = 0
         
         # Update planning agent to idle
         if HAS_EVENT_BUS and event_bus:
@@ -651,6 +708,9 @@ Answer:"""
         # Get thinking agent and process
         thinking_agent = self.registry.get_agent("thinking_agent")
         if thinking_agent:
+            # Get chat history from task input
+            chat_history = task.input_data.get("chat_history", [])
+            
             thinking_task = TaskAssignment(
                 task_id=task_id,
                 task_type="deep_thinking",
@@ -658,7 +718,8 @@ Answer:"""
                 input_data={
                     "query": query,
                     "rag_context": rag_context,
-                    "sources": sources
+                    "sources": sources,
+                    "chat_history": chat_history  # Pass conversation history
                 }
             )
             thinking_result = await thinking_agent.process_task(thinking_task)

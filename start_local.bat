@@ -8,6 +8,9 @@ echo   Agentic RAG - Local Development Server
 echo ============================================================
 echo.
 
+:: Change to script directory
+cd /d "%~dp0"
+
 :: Check if Python is available
 python --version >nul 2>&1
 if errorlevel 1 (

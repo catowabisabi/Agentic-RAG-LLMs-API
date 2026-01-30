@@ -25,6 +25,7 @@ from fast_api.routers.agent_router import router as agent_router
 from fast_api.routers.rag_router import router as rag_router
 from fast_api.routers.chat_router import router as chat_router
 from fast_api.routers.session_router import router as session_router
+from fast_api.routers.memory_router import router as memory_router
 
 # Configure logging
 logging.basicConfig(
@@ -54,6 +55,7 @@ async def create_agents():
     from agents.auxiliary.summarize_agent import SummarizeAgent
     from agents.auxiliary.translate_agent import TranslateAgent
     from agents.auxiliary.calculation_agent import CalculationAgent
+    from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
     
     # Register core agents
     await registry.register_agent(ManagerAgent())
@@ -72,6 +74,7 @@ async def create_agents():
     await registry.register_agent(SummarizeAgent())
     await registry.register_agent(TranslateAgent())
     await registry.register_agent(CalculationAgent())
+    await registry.register_agent(MemoryCaptureAgent())
     
     logger.info(f"Registered {len(registry._agents)} agents")
     
@@ -120,6 +123,7 @@ app.include_router(agent_router)
 app.include_router(rag_router)
 app.include_router(chat_router)
 app.include_router(session_router)
+app.include_router(memory_router)
 
 
 @app.get("/")
