@@ -1,14 +1,19 @@
 """
-Metacognition System
-=====================
+Metacognition System (Enhanced with Self-Model)
+================================================
 
 自我監控和反思系統，讓 Agent 能夠：
 1. 評估自己的回答品質
 2. 識別知識不足
 3. 決定是否需要重試或使用不同策略
 4. 從過往經驗學習
+5. 自我評估能力邊界 (Self-Model)
+6. 選擇最佳處理策略
 
-參考: app_docs/Agentic-Rag-Examples/09_metacognition
+參考: 
+- app_docs/Agentic-Rag-Examples/09_metacognition
+- app_docs/Agentic-Rag-Examples/17_reflexive_metacognitive.ipynb
+- example/01/09-metacognition/README.md
 """
 
 import asyncio
@@ -62,6 +67,102 @@ class ExperienceRecord(BaseModel):
     quality_score: float = Field(description="品質評分")
     lessons: List[str] = Field(default_factory=list, description="學到的教訓")
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class AgentCapability(BaseModel):
+    """
+    Agent 能力定義
+    
+    參考: 17_reflexive_metacognitive.ipynb 的 AgentSelfModel
+    """
+    domain: str = Field(description="能力領域")
+    confidence_level: float = Field(default=0.7, description="在此領域的信心水平 0-1")
+    requires_tool: Optional[str] = Field(default=None, description="需要的工具")
+    limitations: List[str] = Field(default_factory=list, description="限制")
+
+
+class MetacognitiveSelfModel(BaseModel):
+    """
+    Agent 自我模型 (Metacognitive Self-Model)
+    
+    這是 Metacognition 的核心 - Agent 對自己能力的認知
+    """
+    name: str = Field(default="AgenticRAG-Agent")
+    role: str = Field(default="Intelligent assistant with document retrieval capabilities")
+    
+    # 能力清單
+    capabilities: List[AgentCapability] = Field(
+        default_factory=lambda: [
+            AgentCapability(
+                domain="general_conversation",
+                confidence_level=0.9,
+                requires_tool=None,
+                limitations=["Cannot access real-time information"]
+            ),
+            AgentCapability(
+                domain="document_search",
+                confidence_level=0.8,
+                requires_tool="rag_search",
+                limitations=["Limited to uploaded documents", "May miss context"]
+            ),
+            AgentCapability(
+                domain="calculation",
+                confidence_level=0.7,
+                requires_tool="calculator",
+                limitations=["Complex calculations may need verification"]
+            ),
+            AgentCapability(
+                domain="analysis",
+                confidence_level=0.75,
+                requires_tool="thinking_agent",
+                limitations=["May require multiple iterations for complex analysis"]
+            )
+        ]
+    )
+    
+    # 知識邊界
+    knowledge_boundaries: List[str] = Field(
+        default_factory=lambda: [
+            "No access to real-time internet data",
+            "Cannot provide medical/legal/financial advice",
+            "Limited to uploaded document content",
+            "May have training data cutoff limitations"
+        ]
+    )
+    
+    # 高風險主題 (需要特別謹慎或拒絕回答)
+    high_risk_topics: List[str] = Field(
+        default_factory=lambda: [
+            "medical_diagnosis",
+            "legal_advice", 
+            "financial_investment",
+            "safety_critical"
+        ]
+    )
+    
+    # 動態學習的經驗
+    learned_patterns: Dict[str, str] = Field(
+        default_factory=dict,
+        description="從經驗中學到的模式：query_pattern -> best_strategy"
+    )
+    
+    def get_capability_for_domain(self, domain: str) -> Optional[AgentCapability]:
+        """獲取特定領域的能力"""
+        for cap in self.capabilities:
+            if cap.domain == domain:
+                return cap
+        return None
+    
+    def is_within_boundaries(self, topic: str) -> bool:
+        """檢查主題是否在能力邊界內"""
+        topic_lower = topic.lower()
+        for boundary in self.knowledge_boundaries:
+            if any(word in topic_lower for word in ["real-time", "live", "current price"]):
+                return False
+        for risk_topic in self.high_risk_topics:
+            if risk_topic.replace("_", " ") in topic_lower:
+                return False
+        return True
 
 
 class SelfEvaluator:
@@ -454,3 +555,217 @@ def get_strategy_adapter() -> StrategyAdapter:
     if _adapter_instance is None:
         _adapter_instance = StrategyAdapter()
     return _adapter_instance
+
+
+# 自我模型單例
+_self_model_instance = None
+
+
+def get_metacognitive_self_model() -> MetacognitiveSelfModel:
+    """獲取 Metacognitive Self Model 單例"""
+    global _self_model_instance
+    if _self_model_instance is None:
+        _self_model_instance = MetacognitiveSelfModel()
+    return _self_model_instance
+
+
+def update_self_model_from_experience(
+    query_pattern: str,
+    strategy: str,
+    success: bool
+):
+    """從經驗更新 Self Model"""
+    model = get_metacognitive_self_model()
+    if success:
+        model.learned_patterns[query_pattern] = strategy
+        logger.info(f"[Metacognition] Learned: {query_pattern} -> {strategy}")
+
+
+class MetacognitionEngine:
+    """
+    Metacognition 引擎
+    
+    整合自我評估、經驗學習、策略適配的完整系統
+    """
+    
+    def __init__(self):
+        self.config = Config()
+        self.llm = ChatOpenAI(
+            model=self.config.DEFAULT_MODEL,
+            temperature=0.1,
+            api_key=self.config.OPENAI_API_KEY
+        )
+        self.self_model = get_metacognitive_self_model()
+        self.evaluator = get_self_evaluator()
+        self.learner = get_experience_learner()
+        self.adapter = get_strategy_adapter()
+    
+    async def assess_capability(
+        self,
+        query: str
+    ) -> Dict[str, Any]:
+        """
+        評估處理此查詢的能力
+        
+        參考: 17_reflexive_metacognitive.ipynb 的 metacognitive_analysis_node
+        """
+        prompt = ChatPromptTemplate.from_template(
+            """You are a metacognitive reasoning engine. Assess whether you can handle this query.
+
+**Your Capabilities:**
+{capabilities}
+
+**Your Knowledge Boundaries:**
+{boundaries}
+
+**High-Risk Topics (require caution):**
+{high_risk}
+
+**Query:** {query}
+
+Assess:
+1. Is this query within my capabilities?
+2. What domain does this query fall under?
+3. Do I need any specific tools?
+4. What is my confidence level for this query?
+5. Are there any risks or limitations I should be aware of?
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "domain": "the domain this falls under",
+    "requires_tools": ["list", "of", "tools"],
+    "confidence": 0.0-1.0,
+    "risks": ["any risks"],
+    "recommended_strategy": "direct|rag|react|escalate",
+    "reasoning": "brief explanation"
+}}
+"""
+        )
+        
+        capabilities_str = "\n".join([
+            f"- {cap.domain}: confidence={cap.confidence_level}, tool={cap.requires_tool}"
+            for cap in self.self_model.capabilities
+        ])
+        
+        try:
+            chain = prompt | self.llm
+            result = await chain.ainvoke({
+                "capabilities": capabilities_str,
+                "boundaries": "\n".join(self.self_model.knowledge_boundaries),
+                "high_risk": ", ".join(self.self_model.high_risk_topics),
+                "query": query
+            })
+            
+            response = result.content if hasattr(result, 'content') else str(result)
+            
+            import json
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            
+            data = json.loads(response.strip())
+            
+            logger.info(
+                f"[Metacognition] Capability assessment: "
+                f"can_handle={data.get('can_handle')}, "
+                f"strategy={data.get('recommended_strategy')}, "
+                f"confidence={data.get('confidence')}"
+            )
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Capability assessment error: {e}")
+            return {
+                "can_handle": True,
+                "domain": "unknown",
+                "requires_tools": [],
+                "confidence": 0.5,
+                "risks": [str(e)],
+                "recommended_strategy": "rag",
+                "reasoning": f"Error during assessment: {e}"
+            }
+    
+    async def reflect_on_response(
+        self,
+        query: str,
+        response: str,
+        strategy_used: str,
+        context: str = ""
+    ) -> Dict[str, Any]:
+        """
+        對回答進行反思
+        
+        這是完整的 Metacognition 循環：
+        1. 評估回答品質
+        2. 識別問題
+        3. 決定是否需要改進
+        4. 記錄經驗
+        """
+        # Step 1: 評估回答
+        evaluation = await self.evaluator.evaluate_response(
+            query=query,
+            response=response,
+            context=context
+        )
+        
+        # Step 2: 根據評估調整策略
+        adapted_strategy = await self.adapter.adapt_strategy(
+            current_strategy=strategy_used,
+            evaluation=evaluation,
+            query=query
+        )
+        
+        # Step 3: 記錄經驗
+        self.adapter.record_outcome(
+            query=query,
+            strategy=strategy_used,
+            evaluation=evaluation
+        )
+        
+        # Step 4: 更新 self-model
+        query_pattern = self.learner._extract_pattern(query)
+        if evaluation.score >= 0.7:
+            update_self_model_from_experience(
+                query_pattern=query_pattern,
+                strategy=strategy_used,
+                success=True
+            )
+        
+        return {
+            "evaluation": evaluation.model_dump(),
+            "should_retry": evaluation.should_retry,
+            "adapted_strategy": adapted_strategy,
+            "lessons_learned": evaluation.suggestions,
+            "query_pattern": query_pattern
+        }
+    
+    def get_recommended_strategy(self, query: str) -> Optional[str]:
+        """
+        根據過往經驗獲取推薦策略
+        """
+        query_pattern = self.learner._extract_pattern(query)
+        
+        # 首先檢查 self-model 的學習記錄
+        if query_pattern in self.self_model.learned_patterns:
+            return self.self_model.learned_patterns[query_pattern]
+        
+        # 然後檢查經驗學習器
+        return self.learner.get_best_strategy(query_pattern)
+
+
+# Metacognition Engine 單例
+_engine_instance = None
+
+
+def get_metacognition_engine() -> MetacognitionEngine:
+    """獲取 Metacognition Engine 單例"""
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = MetacognitionEngine()
+    return _engine_instance

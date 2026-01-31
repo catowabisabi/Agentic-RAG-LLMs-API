@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import { chatAPI, createWebSocket } from '../lib/api';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface Source {
   database: string;
@@ -761,7 +762,11 @@ export default function ChatPage() {
                     <div className={`max-w-[75%] rounded-xl px-4 py-3 ${
                       msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-100'
                     }`}>
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      {msg.role === 'user' ? (
+                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                      ) : (
+                        <MarkdownRenderer content={msg.content} />
+                      )}
                       
                       {msg.sources && msg.sources.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-gray-600">

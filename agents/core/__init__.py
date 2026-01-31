@@ -37,15 +37,40 @@ from .roles_agent import RolesAgent
 from .casual_chat_agent import CasualChatAgent
 
 # 新增: ReAct Loop 和 Metacognition Engine
-from .react_loop import ReActLoop, get_react_loop, ActionType, ReActResult
+from .react_loop import (
+    ReActLoop, 
+    get_react_loop, 
+    create_react_loop,
+    ActionType, 
+    ReActResult,
+    VerificationResult
+)
 from .metacognition_engine import (
     SelfEvaluator,
     ExperienceLearner,
     StrategyAdapter,
+    MetacognitionEngine,
+    MetacognitiveSelfModel,
     get_self_evaluator,
     get_experience_learner,
-    get_strategy_adapter
+    get_strategy_adapter,
+    get_metacognition_engine,
+    get_metacognitive_self_model
 )
+
+# 新增: Agentic Orchestrator
+from .agentic_orchestrator import (
+    AgenticOrchestrator,
+    AgentSelfModel,
+    AgentStrategy,
+    MetacognitiveAnalysis,
+    OrchestratorResult,
+    get_agentic_orchestrator,
+    create_agentic_orchestrator
+)
+
+# 新增: Manager Agent V2
+from .manager_agent_v2 import ManagerAgentV2, get_manager_agent_v2
 
 __all__ = [
     'ManagerAgent',
@@ -57,16 +82,33 @@ __all__ = [
     'ThinkingAgent',
     'RolesAgent',
     'CasualChatAgent',
-    # ReAct Loop
+    # ReAct Loop (Enhanced)
     'ReActLoop',
     'get_react_loop',
+    'create_react_loop',
     'ActionType',
     'ReActResult',
-    # Metacognition
+    'VerificationResult',
+    # Metacognition (Enhanced)
     'SelfEvaluator',
     'ExperienceLearner',
     'StrategyAdapter',
+    'MetacognitionEngine',
+    'MetacognitiveSelfModel',
     'get_self_evaluator',
     'get_experience_learner',
-    'get_strategy_adapter'
+    'get_strategy_adapter',
+    'get_metacognition_engine',
+    'get_metacognitive_self_model',
+    # Agentic Orchestrator (New)
+    'AgenticOrchestrator',
+    'AgentSelfModel',
+    'AgentStrategy',
+    'MetacognitiveAnalysis',
+    'OrchestratorResult',
+    'get_agentic_orchestrator',
+    'create_agentic_orchestrator',
+    # Manager Agent V2
+    'ManagerAgentV2',
+    'get_manager_agent_v2'
 ]

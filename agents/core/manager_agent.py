@@ -251,7 +251,7 @@ Format: category|reason"""
         Handle knowledge base inventory requests.
         Lists all available knowledge bases with their details.
         """
-        from services.vectordb_manager import get_vectordb_manager
+        from services.vectordb_manager import vectordb_manager
         
         task_id = task.task_id
         query = task.input_data.get("query", task.description)
@@ -278,7 +278,6 @@ Format: category|reason"""
         })
         
         try:
-            vectordb_manager = get_vectordb_manager()
             databases = vectordb_manager.list_databases()
             
             if not databases:

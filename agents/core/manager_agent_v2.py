@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-Manager Agent V2 - Planning-Driven Task Orchestrator
+Manager Agent V2 - Agentic Orchestrator Enhanced
 =============================================================================
 
-核心協調者，使用 Planning-driven 執行模式：
+核心協調者，整合 Agentic 特性：
 
-1. 收到任務 → 發送給 Planning Agent 分析
-2. Planning Agent 返回計劃（Todo List）
-3. Manager 根據計劃分派給不同 Agent
-4. Agent 可能返回新的 planning 需求
-5. Manager 整合、更新 planning/todo
-6. 追蹤誰在工作、做什麼（metadata）
-7. 持續分派直到完成所有 todo
-8. 整個過程反映在 UI
+1. Metacognition - 自我評估能力
+2. 智能策略選擇 - 直接回答 / RAG / ReAct 迭代
+3. PEV 驗證 - 結果品質驗證
+4. Self-Correction - 自動錯誤修正
+5. Planning-Driven - 複雜任務分解
+
+核心原則 (來自 05-agentic-rag/README.md):
+"The distinguishing quality that makes a system 'agentic' is its ability to 
+OWN ITS REASONING PROCESS."
+
+關鍵改進：
+- 不再強制 RAG - 讓 Agent 自主決定是否需要 RAG
+- 整合 ReAct 循環 - 作為處理複雜問題的策略
+- 啟用 Metacognition - 自我評估和學習
 
 =============================================================================
 """
@@ -41,6 +47,29 @@ from agents.shared_services.task_planning import (
 )
 from config.config import Config
 
+# Import Agentic components
+try:
+    from agents.core.agentic_orchestrator import (
+        AgenticOrchestrator, 
+        AgentSelfModel,
+        AgentStrategy,
+        create_agentic_orchestrator
+    )
+    HAS_AGENTIC_ORCHESTRATOR = True
+except ImportError:
+    HAS_AGENTIC_ORCHESTRATOR = False
+    AgenticOrchestrator = None
+
+try:
+    from agents.core.metacognition_engine import (
+        get_metacognition_engine,
+        MetacognitionEngine
+    )
+    HAS_METACOGNITION = True
+except ImportError:
+    HAS_METACOGNITION = False
+    MetacognitionEngine = None
+
 try:
     from services.event_bus import event_bus, EventType, AgentState
     HAS_EVENT_BUS = True
@@ -53,22 +82,28 @@ logger = logging.getLogger(__name__)
 
 class ManagerAgentV2(BaseAgent):
     """
-    Planning-Driven Manager Agent
+    Agentic Manager Agent
     
     職責：
     - 接收 Entry Classifier 分派的非閒聊任務
-    - 發送給 Planning Agent 獲取執行計劃
-    - 根據計劃分派任務給各 Agent
-    - 追蹤執行進度和狀態
-    - 處理 Agent 返回的新 planning 需求
-    - 將所有過程廣播到 UI
+    - 使用 Metacognition 進行自我評估
+    - 選擇最佳策略（Direct / RAG / ReAct）
+    - 執行 Agentic Orchestrator 流程
+    - 必要時使用 Planning Agent 進行任務分解
+    - PEV 驗證結果品質
+    - 將過程廣播到 UI
+    
+    關鍵改進：
+    - 不再強制每次都走 RAG 路徑
+    - Agent 自主決定是否需要檢索
+    - 支持迭代式 ReAct 推理
     """
     
     def __init__(self, agent_name: str = "manager_agent"):
         super().__init__(
             agent_name=agent_name,
-            agent_role="Manager",
-            agent_description="Planning-driven task orchestrator"
+            agent_role="Agentic Manager",
+            agent_description="Agentic orchestrator with metacognition and self-correction"
         )
         
         self.config = Config()
@@ -80,6 +115,23 @@ class ManagerAgentV2(BaseAgent):
         
         self.registry = AgentRegistry()
         self.ws_manager = WebSocketManager()
+        
+        # Initialize Agentic Orchestrator
+        if HAS_AGENTIC_ORCHESTRATOR:
+            self.orchestrator = create_agentic_orchestrator(
+                on_step_callback=self._orchestrator_callback
+            )
+            logger.info("[Manager] Agentic Orchestrator enabled")
+        else:
+            self.orchestrator = None
+            logger.warning("[Manager] Agentic Orchestrator not available, using fallback")
+        
+        # Initialize Metacognition
+        if HAS_METACOGNITION:
+            self.metacognition = get_metacognition_engine()
+            logger.info("[Manager] Metacognition Engine enabled")
+        else:
+            self.metacognition = None
         
         # Active execution plans (task_id -> ExecutionPlan)
         self.active_plans: Dict[str, ExecutionPlan] = {}
@@ -124,27 +176,133 @@ class ManagerAgentV2(BaseAgent):
             }
         }
         
-        logger.info("ManagerAgentV2 (Planning-Driven) initialized")
+        logger.info("ManagerAgentV2 (Agentic Enhanced) initialized")
+    
+    async def _orchestrator_callback(self, step_data: Dict[str, Any]):
+        """Callback for Agentic Orchestrator steps"""
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "agentic_step",
+            "agent": self.agent_name,
+            "content": step_data,
+            "timestamp": datetime.now().isoformat()
+        })
     
     async def process_task(self, task: TaskAssignment) -> Dict[str, Any]:
         """
         Main entry point for processing tasks.
         
-        流程：
-        1. 創建執行計劃
-        2. 獲取 Planning Agent 的計劃
-        3. 執行 Todo List
-        4. 返回最終結果
+        Agentic 流程：
+        1. 使用 Agentic Orchestrator（如果可用）
+        2. Orchestrator 內部處理 Metacognition + 策略選擇
+        3. 回退到 Planning-Driven 模式（複雜任務）
         """
         task_id = task.task_id
         query = task.input_data.get("query", task.description)
+        chat_history = task.input_data.get("chat_history", [])
+        user_context = task.input_data.get("user_context", "")
         
         logger.info(f"[Manager] Processing task: {query[:50]}...")
         
         # Broadcast: Manager started
         await self._broadcast_status("started", task_id, {
             "query": query[:100],
-            "status": "Planning task..."
+            "status": "Analyzing with Agentic capabilities..."
+        })
+        
+        try:
+            # 優先使用 Agentic Orchestrator
+            if self.orchestrator:
+                result = await self._process_with_orchestrator(
+                    query=query,
+                    chat_history=chat_history,
+                    user_context=user_context,
+                    task_id=task_id
+                )
+            else:
+                # Fallback to planning-driven mode
+                result = await self._process_with_planning(task)
+            
+            # Metacognition: 反思結果
+            if self.metacognition and isinstance(result, dict) and result.get("response"):
+                reflection = await self.metacognition.reflect_on_response(
+                    query=query,
+                    response=result["response"],
+                    strategy_used=result.get("strategy_used", "unknown"),
+                    context=result.get("context_used", "")
+                )
+                
+                # 如果評估建議重試，可以再試一次（可選）
+                if reflection.get("should_retry") and result.get("confidence", 1.0) < 0.5:
+                    logger.info("[Manager] Metacognition suggests retry, but skipping for now")
+                    result["metacognition"] = reflection
+            
+            # Broadcast: Completed
+            await self._broadcast_status("completed", task_id, {
+                "response_preview": result.get("response", "")[:200],
+                "strategy": result.get("strategy_used", "unknown")
+            })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[Manager] Task failed: {e}")
+            await self._broadcast_status("failed", task_id, {"error": str(e)})
+            return {
+                "response": f"抱歉，處理您的請求時發生錯誤：{str(e)}",
+                "error": str(e),
+                "agents_involved": ["manager_agent"],
+                "strategy_used": "error_fallback"
+            }
+    
+    async def _process_with_orchestrator(
+        self,
+        query: str,
+        chat_history: List[Dict],
+        user_context: str,
+        task_id: str
+    ) -> Dict[str, Any]:
+        """
+        使用 Agentic Orchestrator 處理任務
+        
+        這是主要的 Agentic 處理路徑
+        """
+        logger.info(f"[Manager] Using Agentic Orchestrator for: {query[:50]}...")
+        
+        # 執行 Orchestrator
+        result = await self.orchestrator.run(
+            query=query,
+            chat_history=chat_history,
+            user_context=user_context
+        )
+        
+        # 轉換結果格式
+        return {
+            "response": result.response,
+            "strategy_used": result.strategy_used.value,
+            "confidence": result.confidence,
+            "sources": result.sources,
+            "reasoning_trace": result.reasoning_trace,
+            "verification_passed": result.verification_passed,
+            "iterations": result.iterations,
+            "metacognitive_analysis": result.metacognitive_analysis.model_dump() if result.metacognitive_analysis else None,
+            "agents_involved": ["manager_agent", "agentic_orchestrator"],
+            "workflow": "agentic_orchestrator"
+        }
+    
+    async def _process_with_planning(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Fallback: 使用 Planning-Driven 模式處理任務
+        
+        用於複雜任務需要分解的情況
+        """
+        task_id = task.task_id
+        query = task.input_data.get("query", task.description)
+        
+        logger.info(f"[Manager] Using Planning-Driven mode for: {query[:50]}...")
+        
+        await self._broadcast_status("thinking", task_id, {
+            "step": "Planning",
+            "message": "Creating execution plan..."
         })
         
         try:

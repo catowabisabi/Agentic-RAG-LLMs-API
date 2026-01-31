@@ -31,12 +31,26 @@ logger = logging.getLogger(__name__)
 
 
 class RAGDecision(BaseModel):
-    """Decision on whether RAG is needed"""
+    """Decision on whether RAG is needed - Enhanced with Agentic capabilities"""
     should_use_rag: bool = Field(description="Whether RAG retrieval is needed")
+    confidence: float = Field(default=0.5, description="Confidence in this decision (0-1)")
     reasoning: str = Field(description="Reasoning for the decision")
     search_queries: List[str] = Field(
         default_factory=list,
         description="Search queries to use if RAG is needed"
+    )
+    # Agentic enhancements
+    complexity_level: str = Field(
+        default="simple", 
+        description="Query complexity: simple, moderate, complex, multi_hop"
+    )
+    suggested_strategy: str = Field(
+        default="direct",
+        description="Strategy: direct (answer without RAG), rag_once (single retrieval), rag_iterative (ReAct loop)"
+    )
+    requires_verification: bool = Field(
+        default=False,
+        description="Whether the answer should go through PEV verification"
     )
 
 
@@ -86,33 +100,98 @@ class RAGAgent(BaseAgent):
             return await self._retrieve_documents(task)
     
     async def _check_if_rag_needed(self, task: TaskAssignment) -> Dict[str, Any]:
-        """Check if RAG is needed for a query"""
+        """
+        Enhanced RAG decision with Agentic capabilities
+        
+        考慮因素：
+        1. 歷史對話 - 是否已有相關上下文
+        2. 用戶偏好 - 是否偏好詳細/簡潔回答
+        3. 問題複雜度 - 簡單問候 vs 多步驟推理
+        4. 知識需求 - 是否需要事實性資訊
+        5. 時效性 - 是否需要最新資訊
+        """
         query = task.input_data.get("query", "")
+        chat_history = task.input_data.get("chat_history", [])
+        user_context = task.input_data.get("user_context", "")
+        
+        # 構建歷史對話摘要
+        history_summary = ""
+        if chat_history:
+            recent_history = chat_history[-5:]  # 最近5條對話
+            history_parts = []
+            for msg in recent_history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:100]
+                history_parts.append(f"{role}: {content}")
+            history_summary = "\n".join(history_parts)
         
         prompt = ChatPromptTemplate.from_template(
-            """Analyze this query and determine if it requires retrieving information from a knowledge base.
+            """You are an intelligent RAG decision engine. Analyze this query and decide the optimal strategy.
 
 Query: {query}
 
-Consider:
-1. Is this a factual question that requires specific knowledge?
-2. Does it reference documents, data, or stored information?
-3. Would retrieved context improve the answer quality?
-4. Is this just a general conversation/greeting that doesn't need retrieval?
+Recent Chat History:
+{history_summary}
 
-Respond with your decision."""
+User Context: {user_context}
+
+**Decision Criteria:**
+
+1. **NO RAG NEEDED** (suggest_strategy: "direct"):
+   - Greetings, casual chat, simple questions
+   - Questions already answered in chat history
+   - General knowledge the LLM can answer confidently
+   - Opinion requests, creative tasks
+
+2. **SINGLE RAG** (suggest_strategy: "rag_once"):
+   - Simple factual questions about specific documents
+   - When query clearly mentions documents/files/data
+   - Basic lookup queries
+
+3. **ITERATIVE RAG / ReAct** (suggest_strategy: "rag_iterative"):
+   - Multi-hop questions requiring connecting multiple facts
+   - Complex analysis requiring multiple document sources
+   - Questions where initial retrieval might be insufficient
+   - Questions with ambiguous terms needing refinement
+
+4. **Complexity Assessment:**
+   - simple: Single, clear question
+   - moderate: Requires some reasoning
+   - complex: Multi-part question
+   - multi_hop: Requires chaining multiple pieces of information
+
+5. **Verification Needed:**
+   - Set to true for high-stakes topics (medical, legal, financial)
+   - Set to true for complex calculations or data analysis
+   - Set to true when accuracy is critical
+
+Respond with your decision as JSON."""
         )
         
         chain = prompt | self.llm.with_structured_output(RAGDecision)
         
         try:
-            decision = await chain.ainvoke({"query": query})
+            decision = await chain.ainvoke({
+                "query": query,
+                "history_summary": history_summary or "No previous conversation.",
+                "user_context": user_context or "No user context provided."
+            })
             
             result = {
                 "should_use_rag": decision.should_use_rag,
+                "confidence": decision.confidence,
                 "reasoning": decision.reasoning,
-                "search_queries": decision.search_queries or [query]
+                "search_queries": decision.search_queries or [query],
+                "complexity_level": decision.complexity_level,
+                "suggested_strategy": decision.suggested_strategy,
+                "requires_verification": decision.requires_verification
             }
+            
+            logger.info(
+                f"[RAG Decision] should_use_rag={decision.should_use_rag}, "
+                f"strategy={decision.suggested_strategy}, "
+                f"complexity={decision.complexity_level}"
+            )
             
             # If RAG is needed, perform retrieval
             if decision.should_use_rag:
@@ -127,6 +206,14 @@ Respond with your decision."""
                     decision.search_queries or [query]
                 )
                 result["documents"] = docs
+                
+                # Build context from retrieved documents
+                context_parts = []
+                for doc in docs:
+                    content = doc.get("content", "")
+                    if content:
+                        context_parts.append(content)
+                result["context"] = "\n\n---\n\n".join(context_parts)
             
             return result
             
@@ -134,7 +221,11 @@ Respond with your decision."""
             logger.error(f"Error in RAG check: {e}")
             return {
                 "should_use_rag": True,  # Default to yes on error
+                "confidence": 0.3,
                 "reasoning": f"Error in decision: {e}",
+                "complexity_level": "simple",
+                "suggested_strategy": "rag_once",
+                "requires_verification": False,
                 "documents": []
             }
     
