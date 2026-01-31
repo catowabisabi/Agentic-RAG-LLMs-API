@@ -23,7 +23,8 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from tools.retriever import DocumentRetriever
+# Replaces incompatible DocumentRetriever with native VectorDBManager
+from services.vectordb_manager import vectordb_manager
 from config.config import Config
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,8 @@ class RAGAgent(BaseAgent):
             temperature=0.1,
             api_key=self.config.OPENAI_API_KEY
         )
-        self.retriever = DocumentRetriever()
+        # self.retriever = DocumentRetriever() # Deprecated
+        self.vectordb = vectordb_manager
         
         # Add custom message handlers
         self._message_handlers[MessageType.RAG_CHECK] = self._handle_rag_check
@@ -160,22 +162,58 @@ Respond with your decision."""
         queries: List[str], 
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
-        """Perform document retrieval"""
+        """Perform document retrieval using VectorDBManager across all active databases"""
         all_docs = []
         seen_ids = set()
         
-        for query in queries:
-            try:
-                docs = self.retriever.retrieve(query=query, top_k=top_k)
+        # Get active databases
+        try:
+            db_list = self.vectordb.list_databases()
+            active_dbs = [db["name"] for db in db_list if db.get("document_count", 0) > 0]
+            
+            if not active_dbs:
+                logger.warning("No active RAG databases found")
+                return []
                 
-                for doc in docs:
-                    doc_id = doc.get("chunk_id", doc.get("content", "")[:50])
-                    if doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        all_docs.append(doc)
+            for query in queries:
+                for db_name in active_dbs:
+                    try:
+                        # Query each DB
+                        result = await self.vectordb.query(query, db_name, n_results=top_k)
+                        docs = result.get("results", [])
                         
-            except Exception as e:
-                logger.error(f"Error retrieving for query '{query}': {e}")
+                        for doc in docs:
+                            # Normalize ID
+                            doc_id = doc.get("id", doc.get("content", "")[:50])
+                            
+                            if doc_id not in seen_ids:
+                                seen_ids.add(doc_id)
+                                
+                                # Ensure minimal fields
+                                if "metadata" not in doc:
+                                    doc["metadata"] = {}
+                                doc["metadata"]["source_db"] = db_name
+                                
+                                # Add similarity score if distance exists (Chroma logic)
+                                # Distance 0 = Identical. Distance > 1 = Different.
+                                # Similarity = 1 / (1 + distance) is a common approx
+                                if "distance" in doc:
+                                    dist = doc["distance"]
+                                    doc["similarity_score"] = 1.0 / (1.0 + dist)
+                                else:
+                                    doc["similarity_score"] = 0.5
+                                    
+                                all_docs.append(doc)
+                                
+                    except Exception as db_err:
+                        logger.warning(f"Error retrieving from {db_name}: {db_err}")
+                        continue
+        
+        except Exception as e:
+            logger.error(f"Error in global retrieval: {e}")
+            
+        # Sort by similarity score descending
+        all_docs.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
         
         return all_docs[:top_k * 2]  # Limit total results
     
@@ -216,16 +254,25 @@ Respond with your decision."""
         }
     
     async def _embed_and_store(self, task: TaskAssignment) -> Dict[str, Any]:
-        """Embed and store new documents"""
+        """Embed and store new documents using VectorDBManager"""
         documents = task.input_data.get("documents", [])
-        metadata = task.input_data.get("metadata", [])
+        metadatas = task.input_data.get("metadata", [])
+        collection_name = task.input_data.get("collection_name", "documents")
         
         try:
-            success = self.retriever.add_documents(documents, metadata)
+            # Ensure database exists
+            await self.vectordb.create_database(collection_name)
+            
+            count = 0
+            for i, doc_content in enumerate(documents):
+                meta = metadatas[i] if i < len(metadatas) else {}
+                await self.vectordb.add_document(collection_name, doc_content, meta)
+                count += 1
             
             return {
-                "success": success,
-                "documents_added": len(documents) if success else 0
+                "success": True,
+                "documents_added": count,
+                "collection": collection_name
             }
             
         except Exception as e:

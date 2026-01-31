@@ -3,12 +3,15 @@ Main API Application
 
 FastAPI application that provides:
 - REST API endpoints
-- WebSocket connections
+- WebSocket connections (including streaming chat)
 - Agent system integration
+- Authentication & Rate Limiting
+- Memory & Metacognition integration
 """
 
 import logging
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
@@ -27,6 +30,15 @@ from fast_api.routers.chat_router import router as chat_router
 from fast_api.routers.session_router import router as session_router
 from fast_api.routers.memory_router import router as memory_router
 from fast_api.routers.intent_router import router as intent_router
+from fast_api.routers.ws_chat_router import router as ws_chat_router
+
+# Import middleware
+from fast_api.middleware.auth import (
+    AuthMiddleware,
+    get_api_key_manager,
+    get_rate_limiter,
+    get_request_logger
+)
 
 # Configure logging
 logging.basicConfig(
@@ -106,8 +118,15 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Agentic RAG API",
-    description="Multi-agent RAG system with WebSocket support",
-    version="1.0.0",
+    description="""
+Multi-agent RAG system with:
+- ReAct Loop (Reason + Act) for iterative reasoning
+- WebSocket streaming for real-time updates
+- Memory integration for personalized responses
+- Metacognition for self-evaluation
+- Rate limiting and API key authentication
+    """,
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -120,8 +139,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add Auth middleware (optional - can be disabled for development)
+ENABLE_AUTH = os.environ.get("ENABLE_AUTH", "false").lower() == "true"
+if ENABLE_AUTH:
+    app.add_middleware(
+        AuthMiddleware,
+        api_key_manager=get_api_key_manager(),
+        rate_limiter=get_rate_limiter(),
+        request_logger=get_request_logger()
+    )
+    logger.info("Authentication middleware enabled")
+else:
+    logger.info("Authentication middleware disabled (set ENABLE_AUTH=true to enable)")
+
 # Include routers
 app.include_router(websocket_router)
+app.include_router(ws_chat_router)  # New streaming chat WebSocket
 app.include_router(agent_router)
 app.include_router(rag_router)
 app.include_router(chat_router)
@@ -135,8 +168,21 @@ async def root():
     """Root endpoint"""
     return {
         "name": "Agentic RAG API",
-        "version": "1.0.0",
-        "status": "running"
+        "version": "2.0.0",
+        "status": "running",
+        "features": {
+            "react_loop": "Iterative reasoning with Think->Act->Observe",
+            "websocket_streaming": "Real-time updates via /ws/chat",
+            "memory": "Episodic and working memory integration",
+            "metacognition": "Self-evaluation and strategy adaptation",
+            "authentication": ENABLE_AUTH
+        },
+        "endpoints": {
+            "chat": "/chat/message",
+            "ws_chat": "/ws/chat",
+            "rag": "/rag/query",
+            "docs": "/docs"
+        }
     }
 
 
@@ -147,7 +193,18 @@ async def health_check():
     
     return {
         "status": "healthy",
-        "agents": registry.get_system_health()
+        "agents": registry.get_system_health(),
+        "auth_enabled": ENABLE_AUTH
+    }
+
+
+@app.get("/api/stats")
+async def api_stats():
+    """Get API usage statistics"""
+    request_logger = get_request_logger()
+    return {
+        "stats": request_logger.get_stats(),
+        "recent_requests": len(request_logger.logs)
     }
 
 

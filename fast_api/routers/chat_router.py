@@ -249,37 +249,29 @@ async def process_chat_task(
         # Determine if this is casual chat or needs manager processing
         entry_classifier = get_entry_classifier()
         classification = await entry_classifier.classify(message, user_context)
-        
-        # Override classification if use_rag is True - force manager_agent for RAG queries
-        # This ensures RAG is used when explicitly requested
-        if use_rag and classification.is_casual:
-            logger.info(f"[Entry] Override: use_rag=True forces manager_agent (was: casual)")
-            classification.is_casual = False
-            classification.route_to = "manager_agent"
-            classification.reason = f"Forced to manager for RAG ({classification.reason})"
+
+        # FORCE classification override BEFORE anything else
+        if use_rag:
+             logger.info(f"[Entry] Override: use_rag=True. Forcing manager_agent.")
+             classification.is_casual = False
+             classification.route_to = "manager_agent"
+             classification.intent = "search_knowledge"
+             classification.reason = "Forced RAG execution"
+             classification.confidence = 1.0
         
         logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
         
-        # Broadcast classification result
-        await ws_manager.broadcast_agent_activity({
-            "type": "entry_classification",
-            "agent": "entry_classifier",
-            "task_id": task_id,
-            "session_id": conversation_id,
-            "content": {
-                "is_casual": classification.is_casual,
-                "reason": classification.reason,
-                "route_to": "casual_chat_agent" if classification.is_casual else "manager_agent"
-            },
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        task_manager.update_progress(task_id, 10, f"Routing to {'casual chat' if classification.is_casual else 'manager'}...")
-        
         # =========== STEP 2: Route to Appropriate Agent ===========
-        if classification.is_casual:
+        # Explicit check for RAG override
+        should_route_casual = classification.is_casual
+        if use_rag:
+             logger.warning(f"[ChatRouter] use_rag=True detected. Forcing NON-CASUAL execution despite classification={classification.is_casual}")
+             should_route_casual = False
+        
+        if should_route_casual:
             # Route to Casual Chat Agent directly
             from agents.core.casual_chat_agent import get_casual_chat_agent
+            casual_agent = get_casual_chat_agent()
             casual_agent = get_casual_chat_agent()
             
             session_db.add_step(
@@ -623,6 +615,14 @@ async def send_message(request: ChatRequest):
         classification = await entry_classifier.classify(request.message, user_context)
         
         logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
+        
+        # Override for RAG in Sync Mode
+        if request.use_rag and classification.is_casual:
+             logger.info(f"[Sync] Override: use_rag=True forces manager_agent (was: casual)")
+             classification.is_casual = False
+             classification.route_to = "manager_agent"
+             classification.intent = "search_knowledge"
+             classification.reason = "Forced RAG execution"
         
         # Broadcast classification result
         await ws_manager.broadcast_agent_activity({

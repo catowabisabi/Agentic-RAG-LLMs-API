@@ -36,6 +36,17 @@ from .thinking_agent import ThinkingAgent
 from .roles_agent import RolesAgent
 from .casual_chat_agent import CasualChatAgent
 
+# 新增: ReAct Loop 和 Metacognition Engine
+from .react_loop import ReActLoop, get_react_loop, ActionType, ReActResult
+from .metacognition_engine import (
+    SelfEvaluator,
+    ExperienceLearner,
+    StrategyAdapter,
+    get_self_evaluator,
+    get_experience_learner,
+    get_strategy_adapter
+)
+
 __all__ = [
     'ManagerAgent',
     'RAGAgent',
@@ -45,5 +56,17 @@ __all__ = [
     'PlanningAgent',
     'ThinkingAgent',
     'RolesAgent',
-    'CasualChatAgent'
+    'CasualChatAgent',
+    # ReAct Loop
+    'ReActLoop',
+    'get_react_loop',
+    'ActionType',
+    'ReActResult',
+    # Metacognition
+    'SelfEvaluator',
+    'ExperienceLearner',
+    'StrategyAdapter',
+    'get_self_evaluator',
+    'get_experience_learner',
+    'get_strategy_adapter'
 ]
