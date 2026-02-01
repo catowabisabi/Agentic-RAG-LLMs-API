@@ -26,6 +26,9 @@ import subprocess
 from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
+# Fix PyTorch OpenMP conflict on Windows
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import uvicorn
 
 from config.config import Config

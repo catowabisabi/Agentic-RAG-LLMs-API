@@ -11,6 +11,9 @@ echo.
 :: Change to script directory
 cd /d "%~dp0"
 
+:: Set environment variables to fix PyTorch OpenMP conflicts
+set KMP_DUPLICATE_LIB_OK=TRUE
+
 :: Check if Python is available
 python --version >nul 2>&1
 if errorlevel 1 (
