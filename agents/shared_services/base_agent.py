@@ -67,6 +67,20 @@ except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
 
+# Import new Service Layer
+try:
+    from services.llm_service import get_llm_service, LLMService
+    from services.rag_service import get_rag_service, RAGService
+    from services.broadcast_service import get_broadcast_service, BroadcastService
+    from services.prompt_manager import get_prompt_manager, PromptManager
+    HAS_SERVICE_LAYER = True
+except ImportError:
+    HAS_SERVICE_LAYER = False
+    get_llm_service = None
+    get_rag_service = None
+    get_broadcast_service = None
+    get_prompt_manager = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,13 +92,23 @@ class BaseAgent(ABC):
     1. Inherit from this class
     2. Implement the process_task method
     3. Define its role and capabilities
+    
+    Now supports Service Layer dependency injection:
+    - llm_service: Unified LLM service
+    - rag_service: Unified RAG service
+    - broadcast_service: Unified WebSocket broadcasting
+    - prompt_manager: Prompt template management
     """
     
     def __init__(
         self,
         agent_name: str,
         agent_role: str,
-        agent_description: str = ""
+        agent_description: str = "",
+        llm_service: Optional[LLMService] = None,
+        rag_service: Optional[RAGService] = None,
+        broadcast_service: Optional[BroadcastService] = None,
+        prompt_manager: Optional[PromptManager] = None
     ):
         self.agent_name = agent_name
         self.agent_role = agent_role
@@ -102,6 +126,18 @@ class BaseAgent(ABC):
         # Error tracking
         self.consecutive_errors = 0
         self.max_consecutive_errors = 3
+        
+        # Service Layer (使用依賴注入或默認單例)
+        if HAS_SERVICE_LAYER:
+            self.llm_service = llm_service or get_llm_service()
+            self.rag_service = rag_service or get_rag_service()
+            self.broadcast = broadcast_service or get_broadcast_service()
+            self.prompt_manager = prompt_manager or get_prompt_manager()
+        else:
+            self.llm_service = None
+            self.rag_service = None
+            self.broadcast = None
+            self.prompt_manager = None
         
         # Message handlers for specific message types
         self._message_handlers: Dict[MessageType, Callable] = {
