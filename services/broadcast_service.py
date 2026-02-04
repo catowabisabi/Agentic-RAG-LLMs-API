@@ -13,12 +13,20 @@ Broadcast Service - 統一的 WebSocket 廣播服務
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 
-from agents.shared_services.websocket_manager import WebSocketManager
+# 延遲導入以避免循環依賴
+if TYPE_CHECKING:
+    from agents.shared_services.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
+
+
+def _get_websocket_manager():
+    """延遲獲取 WebSocketManager 以避免循環導入"""
+    from agents.shared_services.websocket_manager import WebSocketManager
+    return WebSocketManager()
 
 
 class BroadcastService:
@@ -31,9 +39,16 @@ class BroadcastService:
     - 錯誤處理
     """
     
-    def __init__(self, ws_manager: Optional[WebSocketManager] = None):
-        self.ws_manager = ws_manager or WebSocketManager()
+    def __init__(self, ws_manager: Optional["WebSocketManager"] = None):
+        self._ws_manager = ws_manager
         logger.info("[BroadcastService] Initialized")
+    
+    @property
+    def ws_manager(self):
+        """延遲初始化 WebSocketManager"""
+        if self._ws_manager is None:
+            self._ws_manager = _get_websocket_manager()
+        return self._ws_manager
     
     async def agent_status(
         self,
@@ -222,7 +237,7 @@ _broadcast_service: Optional[BroadcastService] = None
 
 
 def get_broadcast_service(
-    ws_manager: Optional[WebSocketManager] = None,
+    ws_manager: Optional["WebSocketManager"] = None,
     reset: bool = False
 ) -> BroadcastService:
     """獲取 Broadcast Service 單例"""

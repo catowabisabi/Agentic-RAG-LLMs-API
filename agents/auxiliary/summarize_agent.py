@@ -12,8 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -23,7 +21,6 @@ from agents.shared_services.message_protocol import (
     MessageProtocol,
     TaskAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +50,8 @@ class SummarizeAgent(BaseAgent):
             agent_description="Creates summaries and condensed information"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.3,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("summarize_agent")
         
         logger.info("SummarizeAgent initialized")
     
@@ -85,8 +78,7 @@ class SummarizeAgent(BaseAgent):
         max_length = task.input_data.get("max_length", 200)
         style = task.input_data.get("style", "concise")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Create a {style} summary of the following content.
+        prompt = f"""Create a {style} summary of the following content.
 Keep the summary under {max_length} words.
 
 Content:
@@ -95,38 +87,42 @@ Content:
 Provide:
 1. A brief title
 2. The main summary
-3. 3-5 key points"""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(Summary)
+3. 3-5 key points
+
+Respond in JSON format with fields: title, summary, key_points, word_count"""
         
         try:
-            result = await chain.ainvoke({
-                "content": content,
-                "max_length": max_length,
-                "style": style
-            })
+            result_text = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.prompt_template.system_prompt,
+                temperature=self.prompt_template.temperature,
+                session_id=task.task_id,
+                response_format={"type": "json_object"}
+            )
+            
+            import json
+            result_data = json.loads(result_text)
             
             return {
                 "success": True,
-                "summary": result.model_dump()
+                "summary": result_data
             }
         except Exception as e:
             # Fallback to unstructured
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "content": content,
-                "max_length": max_length,
-                "style": style
-            })
+            result_text = await self.llm_service.generate(
+                prompt=prompt.replace("Respond in JSON format with fields: title, summary, key_points, word_count", ""),
+                system_message=self.prompt_template.system_prompt,
+                temperature=self.prompt_template.temperature,
+                session_id=task.task_id
+            )
             
             return {
                 "success": True,
                 "summary": {
                     "title": "Summary",
-                    "summary": result.content,
+                    "summary": result_text,
                     "key_points": [],
-                    "word_count": len(result.content.split())
+                    "word_count": len(result_text.split())
                 }
             }
     
@@ -135,24 +131,22 @@ Provide:
         content = task.input_data.get("content", task.description)
         num_points = task.input_data.get("num_points", 5)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Extract the {num_points} most important key points from this content.
+        prompt = f"""Extract the {num_points} most important key points from this content.
 
 Content:
 {content}
 
 Return only the key points as a numbered list."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "content": content,
-            "num_points": num_points
-        })
-        
         # Parse the points
-        lines = result.content.strip().split("\n")
+        lines = result_text.strip().split("\n")
         key_points = []
         for line in lines:
             # Remove numbering
@@ -179,27 +173,25 @@ Return only the key points as a numbered list."""
             "long": "2-3 paragraphs"
         }
         
-        prompt = ChatPromptTemplate.from_template(
-            """Write a new summary that captures the essence of the content.
+        prompt = f"""Write a new summary that captures the essence of the content.
 Do not copy sentences directly - rephrase in your own words.
-Length: {length_guide}
+Length: {length_guide.get(length, "1 paragraph")}
 
 Content:
 {content}
 
 Summary:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "content": content,
-            "length_guide": length_guide.get(length, "1 paragraph")
-        })
         
         return {
             "success": True,
-            "summary": result.content,
+            "summary": result_text,
             "type": "abstractive",
             "length": length
         }
@@ -209,25 +201,23 @@ Summary:"""
         content = task.input_data.get("content", task.description)
         num_sentences = task.input_data.get("num_sentences", 3)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Identify the {num_sentences} most important sentences from this content.
+        prompt = f"""Identify the {num_sentences} most important sentences from this content.
 Return only the exact sentences from the original text.
 
 Content:
 {content}
 
 Most important sentences:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0.1,
+            session_id=task.task_id
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "content": content,
-            "num_sentences": num_sentences
-        })
-        
         # Parse sentences
-        sentences = [s.strip() for s in result.content.split("\n") if s.strip()]
+        sentences = [s.strip() for s in result_text.split("\n") if s.strip()]
         
         return {
             "success": True,
@@ -241,8 +231,7 @@ Most important sentences:"""
         content = task.input_data.get("content", task.description)
         max_points = task.input_data.get("max_points", 10)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Convert this content into clear bullet points.
+        prompt = f"""Convert this content into clear bullet points.
 Maximum {max_points} points.
 Each point should be concise and actionable.
 
@@ -250,17 +239,16 @@ Content:
 {content}
 
 Bullet points:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "content": content,
-            "max_points": max_points
-        })
-        
         # Parse bullet points
-        lines = result.content.strip().split("\n")
+        lines = result_text.strip().split("\n")
         bullets = []
         for line in lines:
             point = line.strip().lstrip("-?? ")

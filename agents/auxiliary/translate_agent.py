@@ -12,8 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -23,7 +21,6 @@ from agents.shared_services.message_protocol import (
     MessageProtocol,
     TaskAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +51,8 @@ class TranslateAgent(BaseAgent):
             agent_description="Handles language translation"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("translate_agent")
         
         # Supported languages
         self.supported_languages = [
@@ -93,18 +86,6 @@ class TranslateAgent(BaseAgent):
         preserve_formatting = task.input_data.get("preserve_formatting", True)
         domain = task.input_data.get("domain", "general")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Translate the following text to {target_language}.
-{source_instruction}
-Domain: {domain}
-{formatting_instruction}
-
-Text to translate:
-{text}
-
-Translation:"""
-        )
-        
         source_instruction = (
             f"Source language: {source_language}"
             if source_language != "auto"
@@ -117,15 +98,22 @@ Translation:"""
             else "Focus on meaning, formatting can be adjusted."
         )
         
-        chain = prompt | self.llm
+        prompt = f"""Translate the following text to {target_language}.
+{source_instruction}
+Domain: {domain}
+{formatting_instruction}
+
+Text to translate:
+{text}
+
+Translation:"""
         
-        result = await chain.ainvoke({
-            "text": text,
-            "target_language": target_language,
-            "source_instruction": source_instruction,
-            "domain": domain,
-            "formatting_instruction": formatting_instruction
-        })
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
+        )
         
         # Detect source language if auto
         if source_language == "auto":
@@ -135,7 +123,7 @@ Translation:"""
         return {
             "success": True,
             "original_text": text,
-            "translated_text": result.content,
+            "translated_text": result_text,
             "source_language": source_language,
             "target_language": target_language
         }
@@ -147,21 +135,22 @@ Translation:"""
     
     async def _detect_language_internal(self, text: str) -> Dict[str, Any]:
         """Internal language detection"""
-        prompt = ChatPromptTemplate.from_template(
-            """Detect the language of the following text.
+        prompt = f"""Detect the language of the following text.
 Return only the language name (e.g., "English", "Chinese", "Japanese").
 
 Text:
-{text}
+{text[:500]}
 
 Language:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message="You are a language detection expert.",
+            temperature=0,
+            session_id=self.agent_name
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({"text": text[:500]})  # Limit text for detection
-        
-        language = result.content.strip()
+        language = result_text.strip()
         
         # Check if it's in supported languages
         is_supported = any(
@@ -183,24 +172,22 @@ Language:"""
         translations = {}
         
         for lang in target_languages:
-            prompt = ChatPromptTemplate.from_template(
-                """Translate the following text to {target_language}.
+            prompt = f"""Translate the following text to {lang}.
 Provide only the translation.
 
 Text:
 {text}
 
 Translation:"""
+            
+            result_text = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.prompt_template.system_prompt,
+                temperature=self.prompt_template.temperature,
+                session_id=task.task_id
             )
             
-            chain = prompt | self.llm
-            
-            result = await chain.ainvoke({
-                "text": text,
-                "target_language": lang
-            })
-            
-            translations[lang] = result.content
+            translations[lang] = result_text
         
         return {
             "success": True,
@@ -219,8 +206,7 @@ Translation:"""
         language = parts[0]
         region = parts[1] if len(parts) > 1 else ""
         
-        prompt = ChatPromptTemplate.from_template(
-            """Localize the following content for the {target_locale} locale.
+        prompt = f"""Localize the following content for the {target_locale} locale.
 Consider cultural context, idioms, and regional preferences.
 Context: {context}
 
@@ -228,19 +214,17 @@ Original content:
 {text}
 
 Localized version:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "text": text,
-            "target_locale": target_locale,
-            "context": context
-        })
         
         return {
             "success": True,
             "original_text": text,
-            "localized_text": result.content,
+            "localized_text": result_text,
             "target_locale": target_locale
         }

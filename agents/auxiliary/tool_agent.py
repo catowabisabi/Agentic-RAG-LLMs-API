@@ -65,12 +65,8 @@ class ToolAgent(BaseAgent):
             agent_description="Executes external tools and APIs"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("tool_agent")
         
         # Tool registry
         self.tools: Dict[str, Dict[str, Any]] = {}

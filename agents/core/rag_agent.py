@@ -11,8 +11,6 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -25,7 +23,6 @@ from agents.shared_services.message_protocol import (
 )
 # Replaces incompatible DocumentRetriever with native VectorDBManager
 from services.vectordb_manager import vectordb_manager
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +69,9 @@ class RAGAgent(BaseAgent):
             agent_description="Handles document retrieval and RAG decisions"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
-        # self.retriever = DocumentRetriever() # Deprecated
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("rag_agent")
+        
         self.vectordb = vectordb_manager
         
         # Add custom message handlers
@@ -125,15 +118,14 @@ class RAGAgent(BaseAgent):
                 history_parts.append(f"{role}: {content}")
             history_summary = "\n".join(history_parts)
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are an intelligent RAG decision engine. Analyze this query and decide the optimal strategy.
+        prompt = f"""You are an intelligent RAG decision engine. Analyze this query and decide the optimal strategy.
 
 Query: {query}
 
 Recent Chat History:
-{history_summary}
+{history_summary or "No previous conversation."}
 
-User Context: {user_context}
+User Context: {user_context or "No user context provided."}
 
 **Decision Criteria:**
 
@@ -165,17 +157,31 @@ User Context: {user_context}
    - Set to true for complex calculations or data analysis
    - Set to true when accuracy is critical
 
-Respond with your decision as JSON."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(RAGDecision)
+Respond with your decision as JSON with these fields: should_use_rag, confidence, reasoning, search_queries, complexity_level, suggested_strategy, requires_verification."""
         
         try:
-            decision = await chain.ainvoke({
-                "query": query,
-                "history_summary": history_summary or "No previous conversation.",
-                "user_context": user_context or "No user context provided."
-            })
+            # Use llm_service for structured output
+            result_text = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.prompt_template.system_prompt,
+                temperature=self.prompt_template.temperature,
+                session_id=task.task_id,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse JSON response
+            import json
+            decision_data = json.loads(result_text)
+            
+            decision = RAGDecision(
+                should_use_rag=decision_data.get("should_use_rag", True),
+                confidence=decision_data.get("confidence", 0.5),
+                reasoning=decision_data.get("reasoning", ""),
+                search_queries=decision_data.get("search_queries", [query]),
+                complexity_level=decision_data.get("complexity_level", "simple"),
+                suggested_strategy=decision_data.get("suggested_strategy", "rag_once"),
+                requires_verification=decision_data.get("requires_verification", False)
+            )
             
             result = {
                 "should_use_rag": decision.should_use_rag,

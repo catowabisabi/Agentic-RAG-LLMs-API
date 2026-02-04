@@ -59,12 +59,8 @@ class NotesAgent(BaseAgent):
             agent_description="Creates and organizes notes from information"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.3,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("notes_agent")
         
         # Local note cache
         self.notes_cache: Dict[str, StructuredNote] = {}

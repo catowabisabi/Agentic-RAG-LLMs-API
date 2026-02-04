@@ -55,12 +55,8 @@ class RolesAgent(BaseAgent):
             agent_description="Monitors agents and provides role corrections"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("roles_agent")
         
         # Agent role definitions
         self.agent_roles = {

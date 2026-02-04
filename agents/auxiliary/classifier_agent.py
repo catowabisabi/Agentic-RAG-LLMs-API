@@ -1,12 +1,11 @@
 import logging
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 
 from agents.shared_services.base_agent import BaseAgent
 from agents.shared_services.message_protocol import TaskAssignment
-from config.config import Config
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +30,8 @@ class ClassifierAgent(BaseAgent):
             agent_description="Performs binary classification based on context and criteria"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.0,  # 使用低溫度以確保邏輯一致性
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("classifier_agent")
         
         logger.info("ClassifierAgent initialized")
 
@@ -67,34 +62,16 @@ class ClassifierAgent(BaseAgent):
         Returns:
             Dict containing 'decision' (bool), 'reason' (str)
         """
-        prompt = ChatPromptTemplate.from_template(
-            """You are a precise binary classifier logic unit.
-Your goal is to Determine if the [Content] meets the [Criterion] based on the [Context].
-
-[Context]
-{context}
-
-[Content]
-{content}
-
-[Criterion (Determination Goal)]
-{criterion}
-
-Instructions:
-1. Analyze the Content strictly against the Criterion.
-2. Return 'decision': true if the Criterion is met (Yes), false otherwise (No).
-3. Provide a concise 'reason'.
-"""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(ClassificationResult)
-        
         try:
-            result = await chain.ainvoke({
-                "context": context if context else "No specific context provided.",
-                "content": content,
-                "criterion": criterion
-            })
+            result = await self.llm_service.generate_with_structured_output(
+                prompt_key="classifier_agent",
+                output_schema=ClassificationResult,
+                variables={
+                    "context": context if context else "No specific context provided.",
+                    "content": content,
+                    "criterion": criterion
+                }
+            )
             
             return {
                 "decision": result.decision,

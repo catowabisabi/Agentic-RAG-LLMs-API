@@ -74,12 +74,8 @@ class ValidationAgent(BaseAgent):
             agent_description="Validates data and responses for accuracy"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("validation_agent")
         
         # Error tracking
         self.validation_history: List[Dict[str, Any]] = []

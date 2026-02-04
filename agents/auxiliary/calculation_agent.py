@@ -14,8 +14,6 @@ import statistics
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -25,7 +23,6 @@ from agents.shared_services.message_protocol import (
     MessageProtocol,
     TaskAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +52,8 @@ class CalculationAgent(BaseAgent):
             agent_description="Performs mathematical calculations"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("calculation_agent")
         
         # Safe math functions
         self.safe_math = {
@@ -151,26 +144,24 @@ class CalculationAgent(BaseAgent):
     
     async def _llm_calculate(self, expression: str, show_steps: bool) -> Dict[str, Any]:
         """Use LLM for complex calculations"""
-        prompt = ChatPromptTemplate.from_template(
-            """Calculate the following mathematical expression step by step.
+        prompt = f"""Calculate the following mathematical expression step by step.
 
 Expression: {expression}
 
 Show your work and provide the final numerical answer."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=self.agent_name
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({"expression": expression})
-        
-        # Extract the final answer
-        content = result.content
         
         return {
             "success": True,
             "expression": expression,
-            "result": content,
-            "steps": content.split("\n") if show_steps else [],
+            "result": result_text,
+            "steps": result_text.split("\n") if show_steps else [],
             "method": "llm"
         }
     
@@ -302,20 +293,18 @@ Show your work and provide the final numerical answer."""
             result = value
         else:
             # Use LLM for complex conversions
-            prompt = ChatPromptTemplate.from_template(
-                """Convert {value} {from_unit} to {to_unit}.
+            prompt = f"""Convert {value} {from_unit} to {to_unit}.
 Provide only the numerical answer."""
+            
+            response_text = await self.llm_service.generate(
+                prompt=prompt,
+                system_message="You are a unit conversion expert.",
+                temperature=0,
+                session_id=self.agent_name
             )
             
-            chain = prompt | self.llm
-            response = await chain.ainvoke({
-                "value": value,
-                "from_unit": from_unit,
-                "to_unit": to_unit
-            })
-            
             try:
-                result = float(response.content.strip())
+                result = float(response_text.strip())
             except:
                 return {
                     "success": False,
@@ -334,22 +323,23 @@ Provide only the numerical answer."""
         """Solve a math problem described in natural language"""
         problem = task.input_data.get("problem", task.description)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Solve the following mathematical problem step by step.
+        prompt = f"""Solve the following mathematical problem step by step.
 Show your work clearly.
 
 Problem:
 {problem}
 
 Solution:"""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=task.task_id
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({"problem": problem})
-        
         # Parse the solution
-        lines = result.content.strip().split("\n")
+        lines = result_text.strip().split("\n")
         steps = [line for line in lines if line.strip()]
         
         # Try to extract final answer
@@ -358,7 +348,7 @@ Solution:"""
         return {
             "success": True,
             "problem": problem,
-            "solution": result.content,
+            "solution": result_text,
             "steps": steps,
             "final_answer": final_answer
         }

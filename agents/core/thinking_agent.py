@@ -12,8 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -24,7 +22,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +59,8 @@ class ThinkingAgent(BaseAgent):
             agent_description="Performs deep reasoning and analysis"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.4,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration from YAML
+        self.prompt_template = self.prompt_manager.get_prompt("thinking_agent")
         
         logger.info("ThinkingAgent initialized")
     
@@ -195,88 +188,88 @@ class ThinkingAgent(BaseAgent):
     
     async def _step_analyze(self, query: str) -> str:
         """Analyze the question"""
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze this question briefly. What type of question is it? 
+        prompt = f"""Analyze this question briefly. What type of question is it? 
 What knowledge domains does it touch? What approach would be best?
 
 Question: {query}
 
 Brief analysis (2-3 sentences):"""
-        )
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({"query": query})
-        return result.content.strip()
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message="You are an analytical thinking assistant.",
+            temperature=0.4,
+            session_id=self.agent_name
+        )
+        return result.strip()
     
     async def _step_decompose(self, query: str, analysis: str) -> List[str]:
         """Decompose into components"""
-        prompt = ChatPromptTemplate.from_template(
-            """Break down this question into smaller components or sub-questions.
+        prompt = f"""Break down this question into smaller components or sub-questions.
 
 Question: {query}
 Analysis: {analysis}
 
 List 2-4 key components (one per line):"""
+        
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message="You are an analytical thinking assistant.",
+            temperature=0.4,
+            session_id=self.agent_name
         )
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({"query": query, "analysis": analysis})
-        
-        lines = result.content.strip().split("\n")
+        lines = result.strip().split("\n")
         return [line.strip().lstrip("0123456789.-) ") for line in lines if line.strip()]
     
     async def _step_reason(self, component: str, context: str) -> str:
         """Reason about a component"""
-        prompt = ChatPromptTemplate.from_template(
-            """Reason about this component/sub-question.
+        prompt = f"""Reason about this component/sub-question.
 
 Component: {component}
 
 Available Context:
-{context}
+{context[:2000] if context else "No additional context"}
 
 Your reasoning (2-4 sentences):"""
-        )
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({
-            "component": component,
-            "context": context[:2000] if context else "No additional context"
-        })
-        return result.content.strip()
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message="You are a reasoning specialist.",
+            temperature=0.4,
+            session_id=self.agent_name
+        )
+        return result.strip()
     
     async def _step_conclude(self, query: str, reasonings: List[str], history_context: str = "") -> str:
         """Synthesize final conclusion"""
-        prompt = ChatPromptTemplate.from_template(
-            """Based on the reasoning about each component and conversation history, synthesize a final answer.
-{history_context}
-Original Question: {query}
-
-Component Reasonings:
-{reasonings}
-
-Provide a comprehensive, well-reasoned answer that takes into account the conversation context:"""
-        )
-        
         reasonings_text = "\n".join([
             f"{i+1}. {r}" for i, r in enumerate(reasonings)
         ])
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({
-            "query": query,
-            "reasonings": reasonings_text,
-            "history_context": history_context
-        })
-        return result.content.strip()
+        prompt = f"""Based on the reasoning about each component and conversation history, synthesize a final answer.
+{history_context}
+Original Question: {query}
+
+Component Reasonings:
+{reasonings_text}
+
+Provide a comprehensive, well-reasoned answer that takes into account the conversation context:"""
+        
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=self.agent_name
+        )
+        return result.strip()
     
     async def _analyze(self, task: TaskAssignment) -> Dict[str, Any]:
         """Perform analysis on content"""
         content = task.input_data.get("content", task.description)
         analysis_type = task.input_data.get("analysis_type", "general")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Perform a {analysis_type} analysis of this content.
+        prompt = f"""Perform a {analysis_type} analysis of this content.
 
 Content:
 {content}
@@ -285,28 +278,27 @@ Provide:
 1. Key insights
 2. Important patterns or themes
 3. Conclusions and recommendations"""
-        )
-        
-        chain = prompt | self.llm
         
         await self.stream_to_frontend(
             f"🔬 Performing {analysis_type} analysis...\n",
             0
         )
         
-        result = await chain.ainvoke({
-            "content": content,
-            "analysis_type": analysis_type
-        })
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
+        )
         
         await self.stream_to_frontend(
-            f"\n{result.content}\n",
+            f"\n{result}\n",
             1
         )
         
         return {
             "analysis_type": analysis_type,
-            "result": result.content
+            "result": result
         }
     
     async def _evaluate(self, task: TaskAssignment) -> Dict[str, Any]:
@@ -314,14 +306,16 @@ Provide:
         options = task.input_data.get("options", [])
         criteria = task.input_data.get("criteria", [])
         
-        prompt = ChatPromptTemplate.from_template(
-            """Evaluate these options based on the given criteria.
+        options_text = "\n".join([f"- {opt}" for opt in options])
+        criteria_text = "\n".join([f"- {crit}" for crit in criteria])
+        
+        prompt = f"""Evaluate these options based on the given criteria.
 
 Options:
-{options}
+{options_text}
 
 Evaluation Criteria:
-{criteria}
+{criteria_text}
 
 For each option, provide:
 1. Strengths
@@ -329,30 +323,26 @@ For each option, provide:
 3. Score (1-10)
 
 Then recommend the best option."""
-        )
-        
-        options_text = "\n".join([f"- {opt}" for opt in options])
-        criteria_text = "\n".join([f"- {crit}" for crit in criteria])
-        
-        chain = prompt | self.llm
         
         await self.stream_to_frontend(
             "⚖️ Evaluating options...\n",
             0
         )
         
-        result = await chain.ainvoke({
-            "options": options_text,
-            "criteria": criteria_text
-        })
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=self.prompt_template.temperature,
+            session_id=task.task_id
+        )
         
         await self.stream_to_frontend(
-            f"\n{result.content}\n",
+            f"\n{result}\n",
             1
         )
         
         return {
             "options": options,
             "criteria": criteria,
-            "evaluation": result.content
+            "evaluation": result
         }

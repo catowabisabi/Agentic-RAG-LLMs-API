@@ -13,8 +13,6 @@ import json
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -24,7 +22,6 @@ from agents.shared_services.message_protocol import (
     MessageProtocol,
     TaskAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +52,8 @@ class DataAgent(BaseAgent):
             agent_description="Handles data processing and transformation"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("data_agent")
         
         logger.info("DataAgent initialized")
     
@@ -86,29 +79,28 @@ class DataAgent(BaseAgent):
         data = task.input_data.get("data", {})
         transformation = task.input_data.get("transformation", "")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Transform the following data according to the specified transformation.
+        data_str = json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
+        prompt = f"""Transform the following data according to the specified transformation.
 
 Input Data:
-{data}
+{data_str}
 
 Transformation Required:
 {transformation}
 
 Provide the transformed data in a structured format."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=task.task_id
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "data": json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data),
-            "transformation": transformation
-        })
         
         return {
             "success": True,
             "original_data": data,
-            "transformed_data": result.content,
+            "transformed_data": result_text,
             "transformation": transformation
         }
     
@@ -163,30 +155,30 @@ Provide the transformed data in a structured format."""
         data = task.input_data.get("data", "")
         fields = task.input_data.get("fields", [])
         
-        prompt = ChatPromptTemplate.from_template(
-            """Extract the following fields from the provided data.
+        fields_str = ", ".join(fields) if fields else "all relevant fields"
+        prompt = f"""Extract the following fields from the provided data.
 
 Data:
-{data}
+{str(data)}
 
 Fields to Extract:
-{fields}
+{fields_str}
 
 Return a JSON object with the extracted fields."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=task.task_id,
+            response_format={"type": "json_object"}
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "data": str(data),
-            "fields": ", ".join(fields) if fields else "all relevant fields"
-        })
         
         # Try to parse as JSON
         try:
-            extracted = json.loads(result.content)
+            extracted = json.loads(result_text)
         except:
-            extracted = {"raw_extraction": result.content}
+            extracted = {"raw_extraction": result_text}
         
         return {
             "success": True,
@@ -212,27 +204,24 @@ Return a JSON object with the extracted fields."""
                 else:
                     source_format = "text"
         
-        prompt = ChatPromptTemplate.from_template(
-            """Convert the following data from {source_format} to {target_format}.
+        prompt = f"""Convert the following data from {source_format} to {target_format}.
 
 Input Data:
-{data}
+{str(data)}
 
 Return only the converted data in {target_format} format."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=task.task_id
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "data": str(data),
-            "source_format": source_format,
-            "target_format": target_format
-        })
         
         return {
             "success": True,
             "original_data": data,
-            "converted_data": result.content,
+            "converted_data": result_text,
             "source_format": source_format,
             "target_format": target_format
         }
@@ -281,26 +270,24 @@ Return only the converted data in {target_format} format."""
         data = task.input_data.get("data", "")
         instructions = task.input_data.get("instructions", task.description)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Process the following data according to these instructions.
+        prompt = f"""Process the following data according to these instructions.
 
 Data:
-{data}
+{str(data)}
 
 Instructions:
 {instructions}
 
 Provide the processed result."""
+        
+        result_text = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0,
+            session_id=task.task_id
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "data": str(data),
-            "instructions": instructions
-        })
         
         return {
             "success": True,
-            "result": result.content
+            "result": result_text
         }

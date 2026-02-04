@@ -58,20 +58,23 @@ class MemoryAgent(BaseAgent):
             agent_description="Manages conversation memory and long-term context"
         )
         
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("memory_agent")
+        
+        # Import config for memory paths
+        from config.config import Config
         self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        
+        # Memory stores
+        self.short_term_memory: List[MemoryEntry] = []
+        self.memory_window = 10  # Use default instead of config
+        
+        # Embeddings for vector store (still needed for memory storage)
+        from langchain_openai import OpenAIEmbeddings
         self.embeddings = OpenAIEmbeddings(
             model=self.config.EMBEDDING_MODEL,
             api_key=self.config.OPENAI_API_KEY
         )
-        
-        # Memory stores
-        self.short_term_memory: List[MemoryEntry] = []
-        self.memory_window = self.config.MEMORY_WINDOW
         
         # Vector store for long-term memory
         self._init_memory_store()

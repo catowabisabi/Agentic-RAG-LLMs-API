@@ -14,15 +14,17 @@ Examples:
 - Simple chitchat
 
 This agent provides fast, direct responses for casual conversations.
+
+[REFACTORED] Now uses Service Layer:
+- llm_service: Unified LLM calls with token tracking
+- prompt_manager: External prompt configuration
+- broadcast: Unified WebSocket broadcasting
 """
 
-import asyncio
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -34,8 +36,6 @@ try:
 except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
-
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,11 @@ class CasualChatAgent(BaseAgent):
     Agent for handling casual/social conversations.
     
     Fast, lightweight responses without RAG or complex reasoning.
+    
+    [REFACTORED] Uses Service Layer:
+    - self.llm_service: Unified LLM calls (auto token tracking)
+    - self.prompt_manager: Loads prompt from YAML
+    - self.broadcast: Unified status broadcasting
     """
     
     def __init__(self, agent_name: str = "casual_chat_agent"):
@@ -60,62 +65,11 @@ class CasualChatAgent(BaseAgent):
             agent_description="Handles casual conversations, greetings, and simple chitchat"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.7,  # More creative for casual chat
-            api_key=self.config.OPENAI_API_KEY,
-            max_tokens=256  # Keep responses concise
-        )
+        # Load prompt template from YAML configuration
+        # (System prompt is now externalized to config/prompts/casual_chat_agent.yaml)
+        self.prompt_template = self.prompt_manager.get_prompt("casual_chat_agent")
         
-        # System prompt for casual conversation
-        self.system_prompt = """You are a friendly AI assistant having a casual conversation.
-
-## CRITICAL LANGUAGE RULE (MUST FOLLOW):
-You MUST respond in the SAME LANGUAGE as the user's message:
-- Chinese (中文/廣東話) input → Chinese response
-- English input → English response  
-- Mixed → Use user's dominant language
-
-Examples of language matching:
-- 用戶：「你好」→ 你要用中文回答
-- 用戶：「你有咩功能」→ 用中文回答功能列表
-- User: "Hello" → Respond in English
-
-## Guidelines:
-- Be warm, friendly, and conversational
-- Keep responses brief and natural (1-3 sentences usually)
-- Don't over-explain or be overly formal
-- Take into account the conversation history if provided
-
-## Capabilities (answer in user's language):
-When asked about capabilities, explain that you can:
-- 回答問題和對話 / Answer questions and chat
-- 搜索知識庫 / Search knowledge bases  
-- 規劃和分析 / Planning and analysis
-- 翻譯、總結、計算 / Translate, summarize, calculate
-- 記住用戶偏好 / Remember preferences
-
-## Examples:
-User: "Hello!"
-→ Hey there! How can I help you today?
-
-User: "你好"  
-→ 你好！有什麼可以幫到你？
-
-User: "你有咩功能"
-→ 我可以幫你：回答問題、搜索知識庫、規劃分析、翻譯、總結文件，同埋記住你嘅偏好。有咩需要？
-
-User: "What can you do?"
-→ I can help with many things! Answer questions, search knowledge bases, help with planning, translate, summarize, and remember your preferences.
-"""
-        
-        self.chat_prompt = ChatPromptTemplate.from_messages([
-            ("system", self.system_prompt),
-            ("human", "{history_context}{message}")
-        ])
-        
-        logger.info("CasualChatAgent initialized")
+        logger.info(f"CasualChatAgent initialized (temperature: {self.prompt_template.temperature})")
     
     async def _check_capabilities(self, query: str) -> CapabilityCheck:
         """
@@ -251,51 +205,100 @@ User: "What can you do?"
                 "workflow": "casual_chat",
                 "duration_ms": duration_ms
             }
+          Broadcast: Starting to generate response
+        await self.broadcast.agent_status(
+            self.agent_name,
+            "generating",
+            # Broadcast error
+            await self.broadcast.error(
+                self.agent_name,
+                str(e),
+                task_id,
+                {"message": message[:100]}
+            )
             
-        except Exception as e:
-            logger.error(f"[CasualChat] Error: {e}")
+            task_id,
+            {"message": "Generating casual response..."}
+        )
+        
+        # Emit start event
+        if HAS_EVENT_BUS and event_bus:
+            await event_bus.update_status(
+                self.agent_name,
+                AgentState.CALLING_LLM,
+                task_id=task_id,
+                message="Generating response..."
+            )
+            await event_bus.emit(
+                EventType.LLM_CALL_START,
+                self.agent_name,
+                {"message_length": len(message)},
+                task_id=task_id
+            )
+        
+        try:
+            # === USE LLM SERVICE (Replaces direct LangChain call) ===
+            # Build full prompt with history
+            full_prompt = f"{history_context}{message}"
             
+            # Call LLM Service (auto tracks tokens, uses cache)
+            response = await self.llm_service.generate(
+                prompt=full_prompt,
+                system_message=self.prompt_template.system_prompt,
+                temperature=self.prompt_template.temperature,
+                max_tokens=self.prompt_template.max_tokens,
+                session_id=task_id,
+                use_cache=True
+            )
+            
+            response_text = response.content
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            
+            # Broadcast: Completed
+            await self.broadcast.agent_status(
+                self.agent_name,
+                "completed",
+                task_id,
+                {
+                    "response_preview": response_text[:100],
+                    "tokens_used": response.usage.total_tokens,
+                    "cost": response.usage.cost,
+                    "cached": response.cached
+                }
+            )
+            
+            # Emit completion
             if HAS_EVENT_BUS and event_bus:
+                await event_bus.emit(
+                    EventType.LLM_CALL_END,
+                    self.agent_name,
+                    {
+                        "response_length": len(response_text),
+                        "duration_ms": duration_ms,
+                        "tokens": response.usage.total_tokens,
+                        "cached": response.cached
+                    },
+                    task_id=task_id
+                )
                 await event_bus.update_status(
                     self.agent_name,
-                    AgentState.ERROR,
-                    task_id=task_id,
-                    message=str(e)
+                    AgentState.IDLE,
+                    message="Ready"
                 )
             
+            logger.info(
+                f"[CasualChat] Response generated in {duration_ms}ms "
+                f"(tokens: {response.usage.total_tokens}, cached: {response.cached})"
+            )
+            
             return {
-                "response": "I'm having trouble responding right now. Could you try again?",
-                "error": str(e),
+                "response": response_text,
                 "agents_involved": [self.agent_name],
                 "sources": [],
-                "workflow": "casual_chat"
-            }
-    
-    @staticmethod
-    def is_casual_message(message: str) -> bool:
-        """
-        Quick heuristic check if a message is likely casual.
-        Used for fast-path routing before LLM classification.
-        
-        Args:
-            message: The user's message
-            
-        Returns:
-            True if message appears to be casual chat
-        """
-        message_lower = message.lower().strip()
-        
-        # Common casual patterns (English + Chinese/Cantonese)
-        casual_patterns = [
-            # === English ===
-            # Greetings
-            "hello", "hi", "hey", "hi there", "hello there", "howdy",
-            "good morning", "good afternoon", "good evening", "good night",
-            "what's up", "whats up", "sup", "yo",
-            # Farewells
-            "bye", "goodbye", "see you", "see ya", "later", "take care",
-            "good bye", "farewell",
-            # Thanks
+                "workflow": "casual_chat",
+                "duration_ms": duration_ms,
+                "usage": response.usage.model_dump(),
+                "cached": response.cached
             "thanks", "thank you", "thx", "ty", "appreciated",
             # Simple questions about the bot
             "who are you", "what are you", "what's your name", "whats your name",

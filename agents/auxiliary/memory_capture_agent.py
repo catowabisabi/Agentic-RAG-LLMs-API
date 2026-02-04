@@ -44,6 +44,10 @@ class MemoryCaptureAgent(BaseAgent):
     
     def __init__(self, agent_name: str = "memory_capture_agent"):
         super().__init__(agent_name, agent_role="Memory Capture Specialist")
+        
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("memory_capture_agent")
+        
         self.cerebro: CerebroMemory = get_cerebro()
         
         # Capabilities

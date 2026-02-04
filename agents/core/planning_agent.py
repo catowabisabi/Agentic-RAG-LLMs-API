@@ -134,12 +134,8 @@ class PlanningAgent(BaseAgent):
             agent_description="Creates step-by-step plans for complex tasks"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.3,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("planning_agent")
         
         # Available agents for planning
         self.available_agents = [
