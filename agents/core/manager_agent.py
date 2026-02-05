@@ -15,8 +15,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -30,7 +28,6 @@ from agents.shared_services.message_protocol import (
 )
 from agents.shared_services.websocket_manager import WebSocketManager
 from agents.shared_services.agent_registry import AgentRegistry
-from config.config import Config
 
 # Import EventBus
 try:
@@ -87,12 +84,8 @@ class ManagerAgent(BaseAgent):
             agent_description="Central coordinator that routes tasks and manages other agents"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.2,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration (Service Layer)
+        self.prompt_template = self.prompt_manager.get_prompt("manager_agent")
         
         self.registry = AgentRegistry()
         
@@ -182,8 +175,7 @@ class ManagerAgent(BaseAgent):
             )
         
         # Use LLM for classification
-        classification_prompt = ChatPromptTemplate.from_template(
-            """You are a query router. Classify this user query into ONE category:
+        classification_prompt = f"""You are a query router. Classify this user query into ONE category:
 
 1. casual_chat: Greetings, small talk, thanks, farewells, questions about AI capabilities
    Examples: "Hello", "Thanks!", "What can you do?", "你有什麼功能", "你有咩功能", "Who are you?"
@@ -212,11 +204,9 @@ User query: "{query}"
 
 Respond with ONLY the category name and a brief reason.
 Format: category|reason"""
-        )
         
         try:
-            chain = classification_prompt | self.llm
-            result = await chain.ainvoke({"query": query})
+            result = await self.llm_service.generate(prompt=classification_prompt, temperature=0.1)
             response = result.content if hasattr(result, 'content') else str(result)
             
             # Parse response
@@ -571,7 +561,7 @@ Guidelines:
 - Be concise but informative
 - If it's a technical term or concept, provide a brief explanation"""
         
-        llm_result = await self.llm.ainvoke(prompt)
+        llm_result = await self.llm_service.generate(prompt=prompt)
         response_text = llm_result.content if hasattr(llm_result, 'content') else str(llm_result)
         
         await self.ws_manager.broadcast_agent_activity({
@@ -875,26 +865,19 @@ Guidelines:
             
             # Generate response
             if rag_context and len(rag_context) > 100:
-                prompt = ChatPromptTemplate.from_template(
-                    """Based on the following knowledge base context, answer the user's question.
+                prompt = f"""Based on the following knowledge base context, answer the user's question.
 Be concise and direct.
 
 {memory_context}
 
 === Knowledge Base Context ===
-{rag_context}
+{rag_context[:4000]}
 === End Context ===
 
 User Question: {query}
 
 Answer:"""
-                )
-                chain = prompt | self.llm
-                result = await chain.ainvoke({
-                    "memory_context": memory_context,
-                    "rag_context": rag_context[:4000],
-                    "query": query
-                })
+                result = await self.llm_service.generate(prompt=prompt)
                 response_text = result.content if hasattr(result, 'content') else str(result)
             else:
                 response_text = "I searched the knowledge bases but couldn't find specific information about that topic."
@@ -1297,25 +1280,19 @@ Answer:"""
                     task_id=task_id
                 )
             
-            from langchain_core.prompts import ChatPromptTemplate
-            
             if rag_context:
-                prompt = ChatPromptTemplate.from_template(
-                    """You are a helpful AI assistant with access to a knowledge base.
+                prompt = f"""You are a helpful AI assistant with access to a knowledge base.
 
 === Knowledge Base Context ===
 {rag_context}
 === End Context ===
 
-User: {message}
+User: {query}
 
 Provide a helpful, accurate, and informative response based on the available context."""
-                )
-                result = await self.llm.ainvoke(
-                    prompt.format(rag_context=rag_context, message=query)
-                )
+                result = await self.llm_service.generate(prompt=prompt)
             else:
-                result = await self.llm.ainvoke(query)
+                result = await self.llm_service.generate(prompt=query)
             
             response_text = result.content if hasattr(result, 'content') else str(result)
             
@@ -1502,43 +1479,29 @@ Provide a helpful, accurate, and informative response based on the available con
     async def _decide_routing(self, task: TaskAssignment) -> TaskRoutingDecision:
         """Use LLM to decide which agent should handle the task"""
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a task router for a multi-agent AI system. Analyze the task and decide which agent should handle it.
-
-Available Agents:
-- rag_agent: Handles retrieval-augmented generation, document search, and knowledge lookup
-- memory_agent: Manages conversation memory and context persistence
-- notes_agent: Creates and organizes notes from information
-- validation_agent: Validates data and responses for accuracy
-- planning_agent: Creates step-by-step plans for complex tasks
-- thinking_agent: Performs deep reasoning and analysis
-- data_agent: Handles data processing and transformation
-- tool_agent: Executes external tools and APIs
-- summarize_agent: Creates summaries and condensed information
-- translate_agent: Handles language translation
-- calculation_agent: Performs mathematical calculations
+        try:
+            decision = await self.llm_service.generate_with_structured_output(
+                prompt_key="manager_agent",
+                output_schema=TaskRoutingDecision,
+                variables={
+                    "task_type": task.task_type,
+                    "description": task.description,
+                    "input_data": str(task.input_data)
+                },
+                user_input=f"""Analyze this task and decide which agent should handle it.
 
 Task Details:
-- Type: {task_type}
-- Description: {description}
-- Input Data: {input_data}
+- Type: {task.task_type}
+- Description: {task.description}
+- Input Data: {str(task.input_data)[:500]}
 
-Analyze the task and determine:
-1. Which agent is best suited to handle this task
-2. Whether planning is needed first (for complex multi-step tasks)
-3. Whether RAG retrieval is needed (for knowledge-dependent tasks)
+Available Agents: rag_agent, memory_agent, notes_agent, validation_agent, planning_agent, thinking_agent, data_agent, tool_agent, summarize_agent, translate_agent, calculation_agent
 
-Respond with your routing decision."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(TaskRoutingDecision)
-        
-        try:
-            decision = await chain.ainvoke({
-                "task_type": task.task_type,
-                "description": task.description,
-                "input_data": str(task.input_data)
-            })
+Determine:
+1. Which agent is best suited
+2. Whether planning is needed first
+3. Whether RAG retrieval is needed"""
+            )
             return decision
         except Exception as e:
             logger.error(f"Error in routing decision: {e}")
@@ -1718,3 +1681,18 @@ Respond with your routing decision."""
             "pending_tasks": self.pending_tasks.qsize(),
             "timestamp": datetime.now().isoformat()
         }
+
+
+# ========================================
+# Singleton accessor
+# ========================================
+
+_manager_agent: Optional[ManagerAgent] = None
+
+
+def get_manager_agent() -> ManagerAgent:
+    """Get or create the manager agent singleton"""
+    global _manager_agent
+    if _manager_agent is None:
+        _manager_agent = ManagerAgent()
+    return _manager_agent

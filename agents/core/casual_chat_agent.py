@@ -21,8 +21,6 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -34,8 +32,6 @@ try:
 except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
-
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +54,6 @@ class CasualChatAgent(BaseAgent):
             agent_name=agent_name,
             agent_role="Casual Chat",
             agent_description="Handles casual conversations, greetings, and simple chitchat"
-        )
-        
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.7,  # More creative for casual chat
-            api_key=self.config.OPENAI_API_KEY,
-            max_tokens=256  # Keep responses concise
         )
         
         # System prompt for casual conversation
@@ -109,11 +97,6 @@ User: "你有咩功能"
 User: "What can you do?"
 → I can help with many things! Answer questions, search knowledge bases, help with planning, translate, summarize, and remember your preferences.
 """
-        
-        self.chat_prompt = ChatPromptTemplate.from_messages([
-            ("system", self.system_prompt),
-            ("human", "{history_context}{message}")
-        ])
         
         logger.info("CasualChatAgent initialized")
     
@@ -221,10 +204,14 @@ User: "What can you do?"
             )
         
         try:
-            # Generate response
-            chain = self.chat_prompt | self.llm
-            result = await chain.ainvoke({"message": message, "history_context": history_context})
-            response_text = result.content if hasattr(result, 'content') else str(result)
+            # Generate response using Service Layer
+            user_message = f"{history_context}{message}"
+            response = await self.llm_service.generate(
+                prompt=user_message,
+                system_message=self.system_prompt,
+                temperature=0.7
+            )
+            response_text = response.content
             
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             

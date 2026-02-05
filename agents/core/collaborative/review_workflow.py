@@ -22,9 +22,9 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ class ReviewWorkflow:
     
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm_service: Optional[LLMService] = None,
         reviewers: Optional[List[ReviewerConfig]] = None,
         consensus_threshold: float = 0.7
     ):
@@ -115,21 +115,11 @@ class ReviewWorkflow:
         Initialize review workflow.
         
         Args:
-            llm: LLM for review tasks
+            llm_service: LLM Service for review tasks
             reviewers: List of reviewer configurations
             consensus_threshold: Score threshold for approval
         """
-        if llm is None:
-            from config.config import Config
-            config = Config()
-            self.llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.2,
-                api_key=config.OPENAI_API_KEY,
-                max_tokens=1500
-            )
-        else:
-            self.llm = llm
+        self.llm_service = llm_service or LLMService()
         
         self.reviewers = reviewers or self.DEFAULT_REVIEWERS
         self.consensus_threshold = consensus_threshold
@@ -138,9 +128,8 @@ class ReviewWorkflow:
         logger.info(f"ReviewWorkflow initialized with {len(self.reviewers)} reviewers")
     
     def _init_prompts(self):
-        """Initialize review prompts"""
-        self.review_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a {perspective} reviewer.
+        """Initialize review prompts - now stored as simple strings for llm_service"""
+        self.review_system_template = """You are a {perspective} reviewer.
 
 Your role is to evaluate the given content from your specific perspective.
 Focus on these criteria:
@@ -157,45 +146,15 @@ Respond in JSON format:
     "suggestions": ["Specific suggestion for improvement"],
     "confidence": 0.8
 }}
-"""),
-            ("human", """Review this content:
-
-**Original Query:**
-{query}
-
-**Content to Review:**
-{content}
-
-Provide your review from the {perspective} perspective.""")
-        ])
+"""
         
-        self.refinement_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are refining content based on reviewer feedback.
+        self.refinement_system = """You are refining content based on reviewer feedback.
 
 Apply the suggestions while maintaining the original intent and information.
 Address the identified issues specifically.
 Keep the strengths that were noted.
 
-Provide the refined content directly."""),
-            ("human", """Refine this content:
-
-**Original Query:**
-{query}
-
-**Original Content:**
-{content}
-
-**Reviewer Feedback:**
-{feedback}
-
-**Key Issues to Address:**
-{issues}
-
-**Specific Suggestions:**
-{suggestions}
-
-Provide the refined content.""")
-        ])
+Provide the refined content directly."""
     
     async def review(
         self,
@@ -350,15 +309,27 @@ Provide the refined content.""")
         
         criteria_text = "\n".join([f"- {c}" for c in reviewer.criteria])
         
+        system_message = self.review_system_template.format(
+            perspective=reviewer.perspective,
+            criteria=criteria_text
+        )
+        
+        prompt = f"""Review this content:
+
+**Original Query:**
+{query[:300]}
+
+**Content to Review:**
+{content[:2000]}
+
+Provide your review from the {reviewer.perspective} perspective."""
+        
         try:
-            formatted = self.review_prompt.format_messages(
-                perspective=reviewer.perspective,
-                criteria=criteria_text,
-                query=query[:300],
-                content=content[:2000]
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.2
             )
-            
-            result = await self.llm.ainvoke(formatted)
             review_data = json.loads(result.content)
             
             return ReviewFeedback(
@@ -401,16 +372,31 @@ Provide the refined content.""")
             f"- {s}" for f in review_result.all_feedback for s in f.suggestions[:2]
         ])
         
+        prompt = f"""Refine this content:
+
+**Original Query:**
+{query[:300]}
+
+**Original Content:**
+{content[:2000]}
+
+**Reviewer Feedback:**
+{feedback_text}
+
+**Key Issues to Address:**
+{issues_text}
+
+**Specific Suggestions:**
+{suggestions_text}
+
+Provide the refined content."""
+        
         try:
-            formatted = self.refinement_prompt.format_messages(
-                query=query[:300],
-                content=content[:2000],
-                feedback=feedback_text,
-                issues=issues_text,
-                suggestions=suggestions_text
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.refinement_system,
+                temperature=0.3
             )
-            
-            result = await self.llm.ainvoke(formatted)
             return result.content
             
         except Exception as e:
@@ -438,39 +424,25 @@ class QuickReview:
     Use for quick quality checks.
     """
     
-    def __init__(self, llm: Optional[ChatOpenAI] = None, threshold: float = 0.6):
-        if llm is None:
-            from config.config import Config
-            config = Config()
-            self.llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.1,
-                api_key=config.OPENAI_API_KEY,
-                max_tokens=500
-            )
-        else:
-            self.llm = llm
-        
+    def __init__(self, llm_service: Optional[LLMService] = None, threshold: float = 0.6):
+        self.llm_service = llm_service or LLMService()
         self.threshold = threshold
         
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """Quickly evaluate this response. Score 0-1 for quality.
+        self.system_prompt = """Quickly evaluate this response. Score 0-1 for quality.
 Consider: accuracy, completeness, clarity, relevance.
-Respond with just a JSON: {"score": 0.8, "pass": true, "issue": "optional issue"}"""),
-            ("human", "Query: {query}\nResponse: {response}")
-        ])
+Respond with just a JSON: {"score": 0.8, "pass": true, "issue": "optional issue"}"""
     
     async def check(self, query: str, response: str) -> Dict[str, Any]:
         """Quick quality check"""
         import json
         
         try:
-            formatted = self.prompt.format_messages(
-                query=query[:200],
-                response=response[:500]
+            prompt = f"Query: {query[:200]}\nResponse: {response[:500]}"
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.system_prompt,
+                temperature=0.1
             )
-            
-            result = await self.llm.ainvoke(formatted)
             data = json.loads(result.content)
             
             return {

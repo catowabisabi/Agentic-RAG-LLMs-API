@@ -22,9 +22,9 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -69,32 +69,21 @@ class SelfEvaluator:
     Based on Microsoft's Metacognition design pattern.
     """
     
-    def __init__(self, llm: Optional[ChatOpenAI] = None):
+    def __init__(self, llm_service: Optional[LLMService] = None):
         """
         Initialize self-evaluator.
         
         Args:
-            llm: LLM to use for evaluation. If None, uses default.
+            llm_service: LLM Service instance. If None, uses default.
         """
-        if llm is None:
-            from config.config import Config
-            config = Config()
-            self.llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.1,  # Low temp for consistent evaluation
-                api_key=config.OPENAI_API_KEY,
-                max_tokens=1000
-            )
-        else:
-            self.llm = llm
+        self.llm_service = llm_service or LLMService()
         
         self._init_prompts()
         logger.info("SelfEvaluator initialized")
     
     def _init_prompts(self):
         """Initialize evaluation prompts"""
-        self.evaluation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a quality evaluator for AI agent responses.
+        self.evaluation_system = """You are a quality evaluator for AI agent responses.
 
 Evaluate the given task execution and response on these dimensions:
 1. Accuracy: Is the information correct?
@@ -108,51 +97,28 @@ Score each dimension from 0.0 to 1.0.
 Identify specific strengths, weaknesses, and patterns.
 
 Respond in JSON format:
-{{
+{
     "overall_score": 0.85,
-    "dimension_scores": {{
+    "dimension_scores": {
         "accuracy": 0.9,
         "completeness": 0.8,
         "relevance": 0.85,
         "clarity": 0.9,
         "efficiency": 0.8,
         "user_alignment": 0.85
-    }},
+    },
     "strengths": ["Clear explanation", "Accurate data"],
     "weaknesses": ["Could be more concise"],
     "improvement_suggestions": ["Add examples next time"],
     "successful_patterns": ["Breaking down complex topics"],
     "failure_patterns": [],
     "confidence": 0.8
-}}
-"""),
-            ("human", """Evaluate this task execution:
-
-**Original Query:**
-{query}
-
-**Execution Plan:**
-{plan}
-
-**Agents Involved:**
-{agents}
-
-**Final Response:**
-{response}
-
-**Execution Time:** {duration_ms}ms
-
-Provide your evaluation in JSON format.""")
-        ])
+}
+"""
         
-        self.quick_eval_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Rate this response on a scale of 0-1 for quality.
+        self.quick_eval_system = """Rate this response on a scale of 0-1 for quality.
 Consider: accuracy, completeness, clarity, relevance.
-Respond with just a number between 0.0 and 1.0."""),
-            ("human", """Query: {query}
-Response: {response}
-Rating:""")
-        ])
+Respond with just a number between 0.0 and 1.0."""
     
     async def evaluate(
         self,
@@ -184,16 +150,30 @@ Rating:""")
         
         try:
             # Build prompt
-            formatted = self.evaluation_prompt.format_messages(
-                query=query[:500],
-                plan=plan or "No plan recorded",
-                agents=", ".join(agents_involved or ["unknown"]),
-                response=response[:1500],
-                duration_ms=duration_ms
-            )
+            prompt = f"""Evaluate this task execution:
+
+**Original Query:**
+{query[:500]}
+
+**Execution Plan:**
+{plan or "No plan recorded"}
+
+**Agents Involved:**
+{", ".join(agents_involved or ["unknown"])}
+
+**Final Response:**
+{response[:1500]}
+
+**Execution Time:** {duration_ms}ms
+
+Provide your evaluation in JSON format."""
             
             # Get evaluation
-            result = await self.llm.ainvoke(formatted)
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.evaluation_system,
+                temperature=0.1
+            )
             
             # Parse JSON response
             eval_data = json.loads(result.content)
@@ -227,12 +207,15 @@ Rating:""")
         Returns a single score 0-1.
         """
         try:
-            formatted = self.quick_eval_prompt.format_messages(
-                query=query[:200],
-                response=response[:500]
-            )
+            prompt = f"""Query: {query[:200]}
+Response: {response[:500]}
+Rating:"""
             
-            result = await self.llm.ainvoke(formatted)
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.quick_eval_system,
+                temperature=0.1
+            )
             score = float(result.content.strip())
             return max(0.0, min(1.0, score))
             
@@ -275,8 +258,8 @@ class AdaptiveEvaluator(SelfEvaluator):
     user feedback patterns.
     """
     
-    def __init__(self, llm: Optional[ChatOpenAI] = None):
-        super().__init__(llm)
+    def __init__(self, llm_service: Optional[LLMService] = None):
+        super().__init__(llm_service)
         
         # Track calibration
         self.feedback_history: List[Dict[str, Any]] = []

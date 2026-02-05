@@ -23,10 +23,7 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-from config.config import Config
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -173,12 +170,7 @@ class SelfEvaluator:
     """
     
     def __init__(self):
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,  # 低溫度以獲得更一致的評估
-            api_key=self.config.OPENAI_API_KEY
-        )
+        self.llm_service = LLMService()
         
         # 評估閾值
         self.retry_threshold = 0.6  # 低於此分數需要重試
@@ -196,16 +188,17 @@ class SelfEvaluator:
         """
         sources = sources or []
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a strict quality evaluator. Evaluate this response objectively.
+        system_message = "You are a strict quality evaluator. Evaluate responses objectively."
+        
+        prompt = f"""Evaluate this response objectively.
 
 Original Question: {query}
 
-Response to Evaluate: {response}
+Response to Evaluate: {response[:2000]}
 
-Available Context Used: {context}
+Available Context Used: {context[:2000] if context else "No context provided"}
 
-Sources Referenced: {sources_count} sources
+Sources Referenced: {len(sources)} sources
 
 Evaluate based on these criteria:
 1. Relevance (0-1): Does the response directly address the question?
@@ -229,18 +222,15 @@ Respond in this exact JSON format:
     "reasoning": "Brief explanation of the evaluation"
 }}
 """
-        )
         
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "query": query,
-                "response": response[:2000],
-                "context": context[:2000] if context else "No context provided",
-                "sources_count": len(sources)
-            })
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.1
+            )
             
-            response_text = result.content if hasattr(result, 'content') else str(result)
+            response_text = result.content
             
             # 解析 JSON
             import json
@@ -589,12 +579,7 @@ class MetacognitionEngine:
     """
     
     def __init__(self):
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        self.llm_service = LLMService()
         self.self_model = get_metacognitive_self_model()
         self.evaluator = get_self_evaluator()
         self.learner = get_experience_learner()
@@ -648,16 +633,48 @@ Respond in JSON:
             for cap in self.self_model.capabilities
         ])
         
+        system_message = "You are a metacognitive reasoning engine. Assess queries and provide structured analysis."
+        
+        prompt = f"""Assess whether you can handle this query.
+
+**Your Capabilities:**
+{capabilities_str}
+
+**Your Knowledge Boundaries:**
+{chr(10).join(self.self_model.knowledge_boundaries)}
+
+**High-Risk Topics (require caution):**
+{", ".join(self.self_model.high_risk_topics)}
+
+**Query:** {query}
+
+Assess:
+1. Is this query within my capabilities?
+2. What domain does this query fall under?
+3. Do I need any specific tools?
+4. What is my confidence level for this query?
+5. Are there any risks or limitations I should be aware of?
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "domain": "the domain this falls under",
+    "requires_tools": ["list", "of", "tools"],
+    "confidence": 0.0-1.0,
+    "risks": ["any risks"],
+    "recommended_strategy": "direct|rag|react|escalate",
+    "reasoning": "brief explanation"
+}}
+"""
+        
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "capabilities": capabilities_str,
-                "boundaries": "\n".join(self.self_model.knowledge_boundaries),
-                "high_risk": ", ".join(self.self_model.high_risk_topics),
-                "query": query
-            })
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.1
+            )
             
-            response = result.content if hasattr(result, 'content') else str(result)
+            response = result.content
             
             import json
             response = response.strip()

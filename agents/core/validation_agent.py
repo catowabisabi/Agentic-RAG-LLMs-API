@@ -12,8 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -24,7 +22,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -103,35 +100,16 @@ class ValidationAgent(BaseAgent):
         source_agent = task.input_data.get("source_agent", "unknown")
         context = task.input_data.get("context", "")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Validate this AI response for quality and accuracy.
-
-Original Query: {query}
-
-Response to Validate:
-{response}
-
-Context (if available):
-{context}
-
-Evaluate:
-1. Does the response actually answer the query?
-2. Is the information accurate and consistent?
-3. Are there any factual errors or contradictions?
-4. Is the response complete and helpful?
-5. Are there any hallucinations or unsupported claims?
-
-Provide a detailed validation."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(DetailedValidation)
-        
         try:
-            validation = await chain.ainvoke({
-                "query": original_query,
-                "response": response,
-                "context": context or "No context provided"
-            })
+            validation = await self.llm_service.generate_with_structured_output(
+                prompt_key="validation_agent",
+                output_schema=DetailedValidation,
+                variables={
+                    "query": original_query,
+                    "response": response,
+                    "context": context or "No context provided"
+                }
+            )
             
             # Track validation
             self._track_validation(source_agent, validation)

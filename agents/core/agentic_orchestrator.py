@@ -31,10 +31,7 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-from config.config import Config
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -139,12 +136,7 @@ class AgenticOrchestrator:
         self_model: Optional[AgentSelfModel] = None,
         on_step_callback: Optional[Callable[[Dict], Awaitable[None]]] = None
     ):
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.2,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        self.llm_service = LLMService()
         
         self.self_model = self_model or AgentSelfModel()
         self.on_step_callback = on_step_callback
@@ -261,20 +253,21 @@ class AgenticOrchestrator:
                 for m in recent
             ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a metacognitive reasoning engine. Analyze the query IN THE CONTEXT OF YOUR OWN CAPABILITIES.
+        system_message = "You are a metacognitive reasoning engine. Analyze queries and select optimal strategies."
+        
+        prompt = f"""You are a metacognitive reasoning engine. Analyze the user query and select the optimal strategy.
 
 **Your Self-Model:**
-- Name: {agent_name}
-- Role: {agent_role}
-- Knowledge Domains: {knowledge_domains}
-- Available Tools: {available_tools}
-- High-Risk Topics (require verification): {high_risk_topics}
+- Name: {self.self_model.name}
+- Role: {self.self_model.role}
+- Knowledge Domains: {", ".join(self.self_model.knowledge_domains)}
+- Available Tools: {", ".join(self.self_model.available_tools)}
+- High-Risk Topics (require verification): {", ".join(self.self_model.high_risk_topics)}
 
 **Recent Conversation:**
-{history_summary}
+{history_summary or "No previous conversation"}
 
-**User Context:** {user_context}
+**User Context:** {user_context or "No specific context"}
 
 **User Query:** {query}
 
@@ -306,13 +299,6 @@ class AgenticOrchestrator:
    - Very vague questions that could mean multiple things
    - When more context would significantly improve the answer
 
-**SELF-ASSESSMENT QUESTIONS:**
-- Can I answer this confidently without retrieval?
-- Is this within my knowledge domain?
-- Does this require information from uploaded documents?
-- Is this a high-risk topic requiring extra verification?
-- How complex is this query?
-
 Respond with your analysis as JSON:
 {{
     "confidence": 0.0-1.0,
@@ -323,22 +309,15 @@ Respond with your analysis as JSON:
     "self_assessment": "What are my capabilities and limitations for this query?"
 }}
 """
-        )
         
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "agent_name": self.self_model.name,
-                "agent_role": self.self_model.role,
-                "knowledge_domains": ", ".join(self.self_model.knowledge_domains),
-                "available_tools": ", ".join(self.self_model.available_tools),
-                "high_risk_topics": ", ".join(self.self_model.high_risk_topics),
-                "history_summary": history_summary or "No previous conversation",
-                "user_context": user_context or "No specific context",
-                "query": query
-            })
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.2
+            )
             
-            response = result.content if hasattr(result, 'content') else str(result)
+            response = result.content
             
             # 解析 JSON
             import json
@@ -408,24 +387,24 @@ Respond with your analysis as JSON:
                 for m in recent
             ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a helpful assistant. Answer the user's question directly.
+        system_message = "You are a helpful assistant. Answer questions directly and conversationally."
+        
+        prompt = f"""Answer the user's question directly.
 
 Recent Conversation:
-{history_context}
+{history_context or "No previous conversation"}
 
 User: {query}
 
 Provide a helpful, conversational response."""
+        
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=system_message,
+            temperature=0.7
         )
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({
-            "history_context": history_context or "No previous conversation",
-            "query": query
-        })
-        
-        return result.content if hasattr(result, 'content') else str(result)
+        return result.content
     
     async def execute_single_rag(
         self,
@@ -449,30 +428,29 @@ Provide a helpful, conversational response."""
                 for m in recent
             ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a helpful assistant with access to a knowledge base.
+        system_message = "You are a helpful assistant with access to a knowledge base. Provide comprehensive answers based on retrieved information."
+        
+        prompt = f"""Answer the user's question based on the retrieved information.
 
 Recent Conversation:
-{history_context}
+{history_context or "No previous conversation"}
 
 Retrieved Information:
-{context}
+{context or "No relevant documents found."}
 
 User Question: {query}
 
 Provide a comprehensive answer based on the retrieved information. 
 If the information is insufficient, acknowledge this and provide what you can.
 Always cite sources when using specific information from the retrieved content."""
+        
+        result = await self.llm_service.generate(
+            prompt=prompt,
+            system_message=system_message,
+            temperature=0.3
         )
         
-        chain = prompt | self.llm
-        result = await chain.ainvoke({
-            "history_context": history_context or "No previous conversation",
-            "context": context or "No relevant documents found.",
-            "query": query
-        })
-        
-        response = result.content if hasattr(result, 'content') else str(result)
+        response = result.content
         
         return {
             "response": response,

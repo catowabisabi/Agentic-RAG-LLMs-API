@@ -83,6 +83,8 @@ class StepType(str, Enum):
     """Types of task steps"""
     THINKING = "thinking"
     PLANNING = "planning"
+    SEARCHING = "searching"
+    COMPLETED = "completed"
     RAG_QUERY = "rag_query"
     RAG_RESULT = "rag_result"
     LLM_CALL = "llm_call"

@@ -182,7 +182,7 @@ class UnifiedManagerAgent(BaseAgent):
                 for msg in recent
             ])
         
-        prompt = f\"\"\"Classify this user query for optimal routing and strategy.
+        prompt = f"""Classify this user query for optimal routing and strategy.
 
 Query: {query}
 
@@ -197,19 +197,26 @@ Analyze and provide:
 5. reasoning: brief explanation
 6. confidence: 0.0 to 1.0
 
-Respond in JSON format.\"\"\"
+Respond in JSON format."""
         
         try:
-            result_text = await self.llm_service.generate(
+            result = await self.llm_service.generate(
                 prompt=prompt,
-                system_message=self.prompt_template.system_prompt,
+                system_message=self.prompt_template.system_prompt if self.prompt_template else None,
                 temperature=0.1,
-                session_id=task.task_id,
-                response_format={"type": "json_object"}
+                session_id=task.task_id
             )
             
             import json
-            classification_data = json.loads(result_text)
+            import re
+            
+            # Extract JSON from response
+            content = result.content if hasattr(result, 'content') else str(result)
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                classification_data = json.loads(json_match.group())
+            else:
+                classification_data = {"query_type": "knowledge", "requires_rag": True}
             
             classification = QueryClassification(
                 query_type=classification_data.get("query_type", "knowledge"),

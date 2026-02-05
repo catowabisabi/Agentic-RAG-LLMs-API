@@ -22,10 +22,7 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-from config.config import Config
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +107,7 @@ class ReActLoop:
         max_retries_per_step: int = 2,
         on_step_callback: Optional[Callable[[ReActStep], Awaitable[None]]] = None
     ):
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.3,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        self.llm_service = LLMService()
         self.max_iterations = max_iterations
         self.verification_threshold = verification_threshold
         self.max_retries_per_step = max_retries_per_step
@@ -143,17 +135,17 @@ class ReActLoop:
         
         參考: 06_PEV.ipynb
         """
-        prompt = ChatPromptTemplate.from_template(
-            """You are a verification agent (PEV - Plan, Execute, Verify).
-Your job is to verify if the tool output is valid and useful for answering the question.
+        system_message = "You are a verification agent (PEV - Plan, Execute, Verify). Your job is to verify if tool output is valid and useful."
+        
+        prompt = f"""Verify if the tool output is valid and useful for answering the question.
 
 Original Question: {query}
 
 Tool Output to Verify:
-{observation}
+{observation.content[:2000]}
 
 Step Context:
-{step_context}
+{step_context[:1000]}
 
 Check for:
 1. Is this a valid result or an error message?
@@ -174,17 +166,15 @@ Respond in JSON format:
     "retry_strategy": "refine_query|different_source|decompose|null"
 }}
 """
-        )
         
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "query": query,
-                "observation": observation.content[:2000],
-                "step_context": step_context[:1000]
-            })
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.3
+            )
             
-            response = result.content if hasattr(result, 'content') else str(result)
+            response = result.content
             
             import json
             response = response.strip()
@@ -227,18 +217,24 @@ Respond in JSON format:
         
         參考: 06_PEV.ipynb 的 re-planning 機制
         """
-        prompt = ChatPromptTemplate.from_template(
-            """You are a self-correcting agent. A previous action failed and you need to adapt.
+        failed_attempts_str = "\n".join([
+            f"- {a['action']}: {a['input'][:50]}... -> {a['reason']}"
+            for a in self.failed_attempts[-3:]  # 最近3次失敗
+        ])
+        
+        system_message = "You are a self-correcting agent. When actions fail, you adapt and generate new strategies."
+        
+        prompt = f"""A previous action failed and you need to adapt.
 
 Original Question: {query}
 
-Failed Action: {failed_action}({failed_input})
+Failed Action: {failed_action.value}({failed_input[:200]})
 Failure Reason: {failure_reason}
 
-Suggested Retry Strategy: {retry_strategy}
+Suggested Retry Strategy: {retry_strategy or "refine_query"}
 
 Previous Failed Attempts:
-{failed_attempts}
+{failed_attempts_str or "None"}
 
 Generate a NEW action that avoids the previous mistakes:
 1. If "refine_query": Try different search terms or phrasing
@@ -256,25 +252,15 @@ Respond in JSON:
     "self_assessment": "assessment of ability to handle this"
 }}
 """
-        )
-        
-        failed_attempts_str = "\n".join([
-            f"- {a['action']}: {a['input'][:50]}... -> {a['reason']}"
-            for a in self.failed_attempts[-3:]  # 最近3次失敗
-        ])
         
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "query": query,
-                "failed_action": failed_action.value,
-                "failed_input": failed_input[:200],
-                "failure_reason": failure_reason,
-                "retry_strategy": retry_strategy or "refine_query",
-                "failed_attempts": failed_attempts_str or "None"
-            })
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.3
+            )
             
-            response = result.content if hasattr(result, 'content') else str(result)
+            response = result.content
             
             import json
             response = response.strip()
@@ -394,16 +380,58 @@ Respond in this exact JSON format:
 """
         )
         
+        system_message = "You are a reasoning agent with self-awareness. Analyze questions and decide actions step by step."
+        
+        user_prompt = f"""Analyze the question and decide your next action.
+
+Question: {query}
+
+Current Knowledge Context:
+{context[:3000] if context else "No context yet."}
+
+Previous Steps:
+{history if history else "No previous steps."}
+
+{failed_info}
+
+Available Actions:
+1. search: Search the knowledge base for more information. Input: search query string
+2. final_answer: Provide the final answer if you have enough information. Input: your complete answer
+3. clarify: Ask for clarification if the question is unclear. Input: clarification question
+4. calculate: Perform a calculation. Input: the calculation expression
+5. refine_query: Refine a previous search query that didn't work well. Input: improved query
+
+**Metacognitive Self-Assessment:**
+Before deciding, ask yourself:
+- Do I have enough information to answer confidently?
+- Is this within my knowledge capabilities?
+- Should I search for more information or can I answer directly?
+- If previous searches failed, how should I adjust my approach?
+
+Think step by step:
+1. What do I know so far?
+2. What do I still need to find out?
+3. Is the current context sufficient to answer the question?
+4. Can I answer this confidently, or do I need more information?
+
+Respond in this exact JSON format:
+{{
+    "thought": "your reasoning here",
+    "action": "search|final_answer|clarify|calculate|refine_query",
+    "action_input": "the input for your chosen action",
+    "confidence": 0.0-1.0,
+    "self_assessment": "brief assessment: can I handle this? what are my limitations here?"
+}}
+"""
+        
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "query": query,
-                "context": context[:3000] if context else "No context yet.",
-                "history": history if history else "No previous steps.",
-                "failed_info": failed_info
-            })
+            result = await self.llm_service.generate(
+                prompt=user_prompt,
+                system_message=system_message,
+                temperature=0.3
+            )
             
-            response = result.content if hasattr(result, 'content') else str(result)
+            response = result.content
             
             # 解析 JSON 回應
             import json
@@ -662,24 +690,24 @@ Respond in this exact JSON format:
         # 達到最大迭代次數，強制生成答案
         logger.warning(f"[ReAct] Max iterations reached, forcing final answer")
         
-        final_prompt = ChatPromptTemplate.from_template(
-            """Based on all the information gathered, provide the best possible answer to the question.
+        system_message = "You are a helpful assistant. Provide comprehensive answers based on available information."
+        
+        final_prompt = f"""Based on all the information gathered, provide the best possible answer to the question.
 
 Question: {query}
 
 Gathered Information:
-{context}
+{accumulated_context[:4000]}
 
 Provide a comprehensive answer based on available information. If information is incomplete, acknowledge this but still provide the best answer you can."""
+        
+        result = await self.llm_service.generate(
+            prompt=final_prompt,
+            system_message=system_message,
+            temperature=0.3
         )
         
-        chain = final_prompt | self.llm
-        result = await chain.ainvoke({
-            "query": query,
-            "context": accumulated_context[:4000]
-        })
-        
-        final_answer = result.content if hasattr(result, 'content') else str(result)
+        final_answer = result.content
         
         return ReActResult(
             final_answer=final_answer,

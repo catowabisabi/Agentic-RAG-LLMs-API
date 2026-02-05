@@ -14,8 +14,6 @@ import json
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 
@@ -26,7 +24,6 @@ from agents.shared_services.message_protocol import (
     MessageProtocol,
     TaskAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -268,8 +265,7 @@ class ToolAgent(BaseAgent):
             for name, t in self.tools.items()
         ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """Given the following task and available tools, select the most appropriate tool.
+        prompt = f"""Given the following task and available tools, select the most appropriate tool.
 
 Task:
 {task_description}
@@ -278,16 +274,13 @@ Available Tools:
 {tool_descriptions}
 
 Return the name of the best tool, or 'none' if no tool is suitable."""
+        
+        result = await self.llm_service.generate(
+            prompt_key="tool_agent",
+            user_input=prompt
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "task_description": task_description,
-            "tool_descriptions": tool_descriptions
-        })
-        
-        selected_tool = result.content.strip().lower()
+        selected_tool = result.get("content", "").strip().lower()
         
         if selected_tool in self.tools:
             return {
@@ -299,7 +292,7 @@ Return the name of the best tool, or 'none' if no tool is suitable."""
             return {
                 "success": False,
                 "message": "No suitable tool found",
-                "suggestion": result.content
+                "suggestion": result.get("content", "")
             }
     
     async def _auto_execute(self, task: TaskAssignment) -> Dict[str, Any]:
@@ -315,30 +308,25 @@ Return the name of the best tool, or 'none' if no tool is suitable."""
         # Prepare parameters using LLM
         tool_def = self.tools[tool_name]["definition"]
         
-        prompt = ChatPromptTemplate.from_template(
-            """Given the task and tool, provide the parameters for the tool as JSON.
+        prompt = f"""Given the task and tool, provide the parameters for the tool as JSON.
 
 Task:
-{task_description}
+{task.description}
 
 Tool: {tool_name}
-Parameters Schema: {parameters}
+Parameters Schema: {json.dumps(tool_def.parameters)}
 
 Return only valid JSON with the parameter values."""
+        
+        result = await self.llm_service.generate(
+            prompt_key="tool_agent",
+            user_input=prompt
         )
         
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "task_description": task.description,
-            "tool_name": tool_name,
-            "parameters": json.dumps(tool_def.parameters)
-        })
-        
         try:
-            parameters = json.loads(result.content)
+            parameters = json.loads(result.get("content", "{}"))
         except:
-            parameters = {"input": result.content}
+            parameters = {"input": result.get("content", "")}
         
         # Execute with the parameters
         task.input_data["tool_name"] = tool_name

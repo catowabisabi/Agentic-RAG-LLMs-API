@@ -51,8 +51,6 @@ import logging
 from typing import Dict, Any, List, Optional, TypedDict, Annotated
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 
@@ -64,7 +62,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -207,35 +204,15 @@ class PlanningAgent(BaseAgent):
         query = state["query"]
         agent_descriptions = state["agent_descriptions"]
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are an expert task planner. Create a detailed execution plan for this task.
-
-Task: {query}
-
-Available Agents:
-{agents}
-
-Create a step-by-step plan that:
-1. Breaks down the task into atomic, manageable steps
-2. Assigns each step to the most appropriate agent
-3. Specifies dependencies between steps
-4. Estimates completion time
-
-Consider:
-- Some steps may require RAG retrieval first
-- Validation should be included for important outputs
-- Complex reasoning should use the thinking_agent
-
-Respond with your execution plan."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
-        
         try:
-            plan = await chain.ainvoke({
-                "query": query,
-                "agents": agent_descriptions
-            })
+            plan = await self.llm_service.generate_with_structured_output(
+                prompt_key="planning_agent",
+                output_schema=ExecutionPlan,
+                variables={
+                    "query": query,
+                    "agents": agent_descriptions
+                }
+            )
             
             plan_dict = {
                 "goal": plan.goal,
@@ -323,31 +300,26 @@ Respond with your execution plan."""
         errors = state["errors"]
         agent_descriptions = state["agent_descriptions"]
         
-        prompt = ChatPromptTemplate.from_template(
-            """Fix these errors in the execution plan:
+        refine_prompt = f"""Fix these errors in the execution plan:
 
 Current Plan:
-Goal: {goal}
-Steps: {steps}
+Goal: {plan.get("goal", "")}
+Steps: {str(plan.get("steps", []))}
 
 Errors to fix:
-{errors}
+{chr(10).join(errors)}
 
 Available Agents:
-{agents}
+{agent_descriptions}
 
 Create a corrected plan."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
         
         try:
-            refined = await chain.ainvoke({
-                "goal": plan.get("goal", ""),
-                "steps": str(plan.get("steps", [])),
-                "errors": "\n".join(errors),
-                "agents": agent_descriptions
-            })
+            refined = await self.llm_service.generate_with_structured_output(
+                prompt_key="planning_agent",
+                output_schema=ExecutionPlan,
+                user_input=refine_prompt
+            )
             
             refined_dict = {
                 "goal": refined.goal,
@@ -424,8 +396,10 @@ Create a corrected plan."""
             if name in available_agents or not available_agents
         ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are a task planner. Analyze this query and create an execution plan.
+        context_section = f"\nContext: {context}" if context else ""
+        user_context_section = f"\nUser preferences: {user_context}" if user_context else ""
+        
+        plan_prompt = f"""You are a task planner. Analyze this query and create an execution plan.
 
 Query: {query}
 {context_section}
@@ -457,21 +431,14 @@ Respond in JSON format:
         }}
     ]
 }}"""
-        )
-        
-        context_section = f"\nContext: {context}" if context else ""
-        user_context_section = f"\nUser preferences: {user_context}" if user_context else ""
         
         try:
-            chain = prompt | self.llm
-            result = await chain.ainvoke({
-                "query": query,
-                "context_section": context_section,
-                "user_context_section": user_context_section,
-                "agent_desc": agent_desc
-            })
+            result = await self.llm_service.generate(
+                prompt_key="planning_agent",
+                user_input=plan_prompt
+            )
             
-            content = result.content if hasattr(result, 'content') else str(result)
+            content = result.get("content", "")
             
             # Parse JSON
             import json
@@ -669,41 +636,21 @@ Respond in JSON format:
             f"- {name}: {desc}" for name, desc in self.available_agents
         ])
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are an expert task planner. Create a detailed execution plan for this task.
-
-Task: {query}
-
-Available Agents:
-{agents}
-
-Create a step-by-step plan that:
-1. Breaks down the task into atomic, manageable steps
-2. Assigns each step to the most appropriate agent
-3. Specifies dependencies between steps
-4. Estimates completion time
-
-Consider:
-- Some steps may require RAG retrieval first
-- Validation should be included for important outputs
-- Complex reasoning should use the thinking_agent
-
-Respond with your execution plan."""
-        )
-        
         # Stream planning process
         await self.stream_to_frontend(
             "🔍 Identifying required agents and steps...\n", 
             1
         )
         
-        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
-        
         try:
-            plan = await chain.ainvoke({
-                "query": query,
-                "agents": agent_descriptions
-            })
+            plan = await self.llm_service.generate_with_structured_output(
+                prompt_key="planning_agent",
+                output_schema=ExecutionPlan,
+                variables={
+                    "query": query,
+                    "agents": agent_descriptions
+                }
+            )
             
             # Stream the plan to frontend
             await self._stream_plan(plan)
@@ -812,33 +759,29 @@ Respond with your execution plan."""
         original_plan = task.input_data.get("plan", {})
         feedback = task.input_data.get("feedback", "")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Refine this execution plan based on the feedback.
+        agent_descriptions = "\n".join([
+            f"- {name}: {desc}" for name, desc in self.available_agents
+        ])
+        
+        refine_prompt = f"""Refine this execution plan based on the feedback.
 
 Original Plan:
-{plan}
+{str(original_plan)}
 
 Feedback:
 {feedback}
 
 Available Agents:
-{agents}
+{agent_descriptions}
 
 Create an improved plan that addresses the feedback."""
-        )
-        
-        agent_descriptions = "\n".join([
-            f"- {name}: {desc}" for name, desc in self.available_agents
-        ])
-        
-        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
         
         try:
-            plan = await chain.ainvoke({
-                "plan": str(original_plan),
-                "feedback": feedback,
-                "agents": agent_descriptions
-            })
+            plan = await self.llm_service.generate_with_structured_output(
+                prompt_key="planning_agent",
+                output_schema=ExecutionPlan,
+                user_input=refine_prompt
+            )
             
             return {
                 "success": True,
@@ -863,35 +806,30 @@ Create an improved plan that addresses the feedback."""
         errors: List[str]
     ) -> ExecutionPlan:
         """Internal plan refinement based on validation errors"""
-        prompt = ChatPromptTemplate.from_template(
-            """Fix these errors in the execution plan:
-
-Current Plan:
-Goal: {goal}
-Steps: {steps}
-
-Errors to fix:
-{errors}
-
-Available Agents:
-{agents}
-
-Create a corrected plan."""
-        )
-        
         agent_descriptions = "\n".join([
             f"- {name}: {desc}" for name, desc in self.available_agents
         ])
         
-        chain = prompt | self.llm.with_structured_output(ExecutionPlan)
+        refine_prompt = f"""Fix these errors in the execution plan:
+
+Current Plan:
+Goal: {plan.goal}
+Steps: {str([s.model_dump() for s in plan.steps])}
+
+Errors to fix:
+{chr(10).join(errors)}
+
+Available Agents:
+{agent_descriptions}
+
+Create a corrected plan."""
         
         try:
-            refined = await chain.ainvoke({
-                "goal": plan.goal,
-                "steps": str([s.model_dump() for s in plan.steps]),
-                "errors": "\n".join(errors),
-                "agents": agent_descriptions
-            })
+            refined = await self.llm_service.generate_with_structured_output(
+                prompt_key="planning_agent",
+                output_schema=ExecutionPlan,
+                user_input=refine_prompt
+            )
             return refined
         except:
             return plan  # Return original if refinement fails

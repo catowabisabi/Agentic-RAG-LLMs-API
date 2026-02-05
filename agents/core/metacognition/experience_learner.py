@@ -24,9 +24,9 @@ from datetime import datetime
 from collections import defaultdict
 import json
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+
+from services.llm_service import LLMService
 
 from agents.shared_services.memory import (
     get_episodic_store,
@@ -79,19 +79,9 @@ class ExperienceLearner:
     Based on Microsoft's Metacognition and Memory patterns.
     """
     
-    def __init__(self, llm: Optional[ChatOpenAI] = None):
+    def __init__(self, llm_service: Optional[LLMService] = None):
         """Initialize experience learner"""
-        if llm is None:
-            from config.config import Config
-            config = Config()
-            self.llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.2,
-                api_key=config.OPENAI_API_KEY,
-                max_tokens=1500
-            )
-        else:
-            self.llm = llm
+        self.llm_service = llm_service or LLMService()
         
         self.episodic_store = get_episodic_store()
         self.memory_manager = get_memory_manager()
@@ -106,8 +96,7 @@ class ExperienceLearner:
     
     def _init_prompts(self):
         """Initialize learning prompts"""
-        self.lesson_extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an experience analyst for an AI agent system.
+        self.lesson_extraction_system = """You are an experience analyst for an AI agent system.
 
 Analyze the completed task and extract:
 1. What went well (successful patterns)
@@ -117,7 +106,7 @@ Analyze the completed task and extract:
 Be specific and actionable. Focus on patterns that can be applied to future similar tasks.
 
 Respond in JSON format:
-{{
+{
     "successful_patterns": [
         "Pattern description that led to success"
     ],
@@ -130,58 +119,23 @@ Respond in JSON format:
     "recommended_improvements": [
         "Specific improvement for future"
     ]
-}}
-"""),
-            ("human", """Analyze this completed task:
-
-**Task Category:** {category}
-**Query:** {query}
-**Plan:** {plan}
-**Agents Used:** {agents}
-**Outcome:** {outcome}
-**Duration:** {duration}ms
-
-**Steps Executed:**
-{steps}
-
-**Final Response (truncated):**
-{response}
-
-{feedback_section}
-
-Extract patterns and lessons.""")
-        ])
+}
+"""
         
-        self.strategy_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a strategy advisor for an AI agent system.
+        self.strategy_system = """You are a strategy advisor for an AI agent system.
 
 Based on past experiences with similar tasks, recommend the best approach.
 Consider which agents worked well, what patterns led to success, and what to avoid.
 
 Respond in JSON format:
-{{
+{
     "recommended_agents": ["agent1", "agent2"],
     "recommended_approach": "Brief description of approach",
     "patterns_to_apply": ["Pattern to use"],
     "patterns_to_avoid": ["Pattern to avoid"],
     "confidence": 0.8
-}}
-"""),
-            ("human", """New task to plan:
-**Category:** {category}
-**Query:** {query}
-
-**Past Similar Episodes ({episode_count} total):**
-{episodes_summary}
-
-**Known Success Patterns:**
-{success_patterns}
-
-**Known Failure Patterns:**
-{failure_patterns}
-
-Recommend strategy.""")
-        ])
+}
+"""
     
     async def extract_lessons(self, episode: Episode) -> Dict[str, Any]:
         """
@@ -207,19 +161,30 @@ Recommend strategy.""")
             feedback_section += f"\n**User Rating:** {episode.user_rating}/5"
         
         try:
-            formatted = self.lesson_extraction_prompt.format_messages(
-                category=episode.task_category.value,
-                query=episode.task_query[:300],
-                plan=episode.plan_summary[:300],
-                agents=", ".join(episode.agents_involved),
-                outcome=episode.outcome.value,
-                duration=episode.total_duration_ms,
-                steps=steps_text,
-                response=episode.final_response_summary[:500],
-                feedback_section=feedback_section
+            prompt = f"""Analyze this completed task:
+
+**Task Category:** {episode.task_category.value}
+**Query:** {episode.task_query[:300]}
+**Plan:** {episode.plan_summary[:300]}
+**Agents Used:** {", ".join(episode.agents_involved)}
+**Outcome:** {episode.outcome.value}
+**Duration:** {episode.total_duration_ms}ms
+
+**Steps Executed:**
+{steps_text}
+
+**Final Response (truncated):**
+{episode.final_response_summary[:500]}
+
+{feedback_section}
+
+Extract patterns and lessons."""
+
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.lesson_extraction_system,
+                temperature=0.2
             )
-            
-            result = await self.llm.ainvoke(formatted)
             lessons = json.loads(result.content)
             
             # Update episode with extracted lessons
@@ -287,16 +252,26 @@ Recommend strategy.""")
         patterns = self._get_cached_patterns(task_category)
         
         try:
-            formatted = self.strategy_prompt.format_messages(
-                category=task_category.value,
-                query=query[:300],
-                episode_count=len(episodes),
-                episodes_summary="\n".join(episodes_summary),
-                success_patterns="\n".join([f"- {p}" for p in patterns["success"][:5]]) or "None recorded",
-                failure_patterns="\n".join([f"- {p}" for p in patterns["failure"][:5]]) or "None recorded"
+            prompt = f"""New task to plan:
+**Category:** {task_category.value}
+**Query:** {query[:300]}
+
+**Past Similar Episodes ({len(episodes)} total):**
+{chr(10).join(episodes_summary)}
+
+**Known Success Patterns:**
+{chr(10).join([f"- {p}" for p in patterns["success"][:5]]) or "None recorded"}
+
+**Known Failure Patterns:**
+{chr(10).join([f"- {p}" for p in patterns["failure"][:5]]) or "None recorded"}
+
+Recommend strategy."""
+
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.strategy_system,
+                temperature=0.2
             )
-            
-            result = await self.llm.ainvoke(formatted)
             rec_data = json.loads(result.content)
             
             recommendation = StrategyRecommendation(

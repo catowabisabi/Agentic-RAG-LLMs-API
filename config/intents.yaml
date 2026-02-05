@@ -80,6 +80,32 @@ intents:
       - "搜索 Python 教程"
       - "有沒有 SolidWorks 的資料"
 
+  # ----- SolidWorks API 查詢 -----
+  solidworks_api:
+    description: "SolidWorks API 查詢、VBA/C# 編程、自動化"
+    route_to: sw_agent
+    handler: search
+    patterns:
+      - "solidworks"
+      - "sw\\s*api"
+      - "vba.*macro"
+      - "macro.*vba"
+      - "怎麼.*畫|畫.*怎麼"
+      - "怎麼.*建模"
+      - "怎麼.*組合"
+      - "怎麼.*裝配"
+      - "ipartdoc|idrawingdoc|iassemblydoc|imodeldoc"
+      - "opendoc|savedoc|closedoc"
+      - "feature.*樹|特徵樹"
+      - "sketch|草圖"
+      - "extrude|拉伸"
+      - "csharp.*solidworks|solidworks.*csharp"
+    examples:
+      - "SolidWorks 怎麼用 API 畫圓"
+      - "OpenDoc6 有什麼參數"
+      - "VBA macro 怎麼選擇面"
+      - "怎麼用 C# 創建草圖"
+
   # ----- 計算 -----
   calculation:
     description: "數學計算、公式求解"

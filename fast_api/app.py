@@ -70,6 +70,7 @@ async def create_agents():
     from agents.auxiliary.translate_agent import TranslateAgent
     from agents.auxiliary.calculation_agent import CalculationAgent
     from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
+    from agents.auxiliary.sw_agent import SWAgent
     
     # Register core agents
     await registry.register_agent(EntryClassifier())  # First-line classifier
@@ -90,6 +91,7 @@ async def create_agents():
     await registry.register_agent(TranslateAgent())
     await registry.register_agent(CalculationAgent())
     await registry.register_agent(MemoryCaptureAgent())
+    await registry.register_agent(SWAgent())
     
     logger.info(f"Registered {len(registry._agents)} agents")
     

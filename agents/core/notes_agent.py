@@ -11,8 +11,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -23,7 +21,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -85,32 +82,15 @@ class NotesAgent(BaseAgent):
         content = task.input_data.get("content", "")
         context = task.input_data.get("context", "")
         
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze the following content and create a structured note.
-
-Content:
-{content}
-
-Additional Context:
-{context}
-
-Create a well-organized note with:
-1. A brief, descriptive title
-2. A concise summary (2-3 sentences)
-3. Key points (bullet points)
-4. Relevant tags for categorization
-5. An importance score (0-1) based on usefulness
-
-Respond with your structured note."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(StructuredNote)
-        
         try:
-            note = await chain.ainvoke({
-                "content": content,
-                "context": context or "No additional context"
-            })
+            note = await self.llm_service.generate_with_structured_output(
+                prompt_key="notes_agent",
+                output_schema=StructuredNote,
+                variables={
+                    "content": content,
+                    "context": context or "No additional context"
+                }
+            )
             
             # Generate note ID
             note_id = f"note_{datetime.now().timestamp()}"
@@ -139,23 +119,16 @@ Respond with your structured note."""
         content = task.input_data.get("content", "")
         max_length = task.input_data.get("max_length", 500)
         
-        prompt = ChatPromptTemplate.from_template(
-            """Create a comprehensive but concise note summarizing this content.
-The summary should be no longer than {max_length} characters.
-
-Content to summarize:
-{content}
-
-Create a structured note that captures the essential information."""
-        )
-        
-        chain = prompt | self.llm.with_structured_output(StructuredNote)
-        
         try:
-            note = await chain.ainvoke({
-                "content": content,
-                "max_length": max_length
-            })
+            note = await self.llm_service.generate_with_structured_output(
+                prompt_key="notes_agent",
+                output_schema=StructuredNote,
+                variables={
+                    "content": content,
+                    "max_length": max_length
+                },
+                user_input=f"Summarize in max {max_length} characters"
+            )
             
             note_id = f"summary_{datetime.now().timestamp()}"
             self.notes_cache[note_id] = note

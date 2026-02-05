@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class GroupChat:
     
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm_service: Optional[LLMService] = None,
         participants: Optional[List[ParticipantConfig]] = None,
         max_rounds: int = 3
     ):
@@ -118,21 +118,11 @@ class GroupChat:
         Initialize group chat.
         
         Args:
-            llm: LLM for all participants
+            llm_service: LLM Service for all participants
             participants: List of participant configurations
             max_rounds: Maximum discussion rounds
         """
-        if llm is None:
-            from config.config import Config
-            config = Config()
-            self.llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.7,  # Higher for diversity
-                api_key=config.OPENAI_API_KEY,
-                max_tokens=500
-            )
-        else:
-            self.llm = llm
+        self.llm_service = llm_service or LLMService()
         
         self.participants = participants or self.DEFAULT_PARTICIPANTS
         self.max_rounds = max_rounds
@@ -144,9 +134,8 @@ class GroupChat:
         logger.info(f"GroupChat initialized with {len(self.participants)} participants")
     
     def _init_prompts(self):
-        """Initialize prompts for participants"""
-        self.participant_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are {name}, an expert in {expertise}.
+        """Initialize prompts for participants - using simple strings for llm_service"""
+        self.participant_system_template = """You are {name}, an expert in {expertise}.
 
 Your personality: {personality}
 Speaking style: {speaking_style}
@@ -156,17 +145,9 @@ Contribute your perspective based on your expertise.
 Be constructive and engage with other participants' points.
 Keep your response focused and concise (2-4 sentences).
 
-Do NOT repeat what others have said. Add new value."""),
-            ("human", """Topic: {topic}
-
-Discussion so far:
-{history}
-
-Share your perspective on this topic, considering what others have said.""")
-        ])
+Do NOT repeat what others have said. Add new value."""
         
-        self.moderator_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are the discussion moderator.
+        self.moderator_system = """You are the discussion moderator.
 
 Your job is to:
 1. Guide the discussion productively
@@ -174,28 +155,7 @@ Your job is to:
 3. Highlight key disagreements
 4. Summarize conclusions
 
-Keep the discussion on track and ensure all perspectives are heard."""),
-            ("human", """Topic: {topic}
-
-Full discussion:
-{history}
-
-Analyze this discussion and provide:
-1. Whether consensus was reached
-2. Key points of agreement
-3. Key points of disagreement
-4. Recommended conclusion
-5. Action items (if any)
-
-Respond in JSON format:
-{{
-    "consensus_reached": true/false,
-    "conclusion": "Main conclusion",
-    "key_points": ["point1", "point2"],
-    "dissenting_views": ["view1"],
-    "action_items": ["action1"]
-}}""")
-        ])
+Keep the discussion on track and ensure all perspectives are heard."""
     
     async def discuss(
         self,
@@ -300,17 +260,26 @@ Respond in JSON format:
         # Build history text
         history_text = self._format_history(history)
         
+        system_message = self.participant_system_template.format(
+            name=participant.name,
+            expertise=participant.expertise,
+            personality=participant.personality,
+            speaking_style=participant.speaking_style
+        )
+        
+        prompt = f"""Topic: {topic[:500]}
+
+Discussion so far:
+{history_text if history_text else "No discussion yet. You speak first."}
+
+Share your perspective on this topic, considering what others have said."""
+        
         try:
-            formatted = self.participant_prompt.format_messages(
-                name=participant.name,
-                expertise=participant.expertise,
-                personality=participant.personality,
-                speaking_style=participant.speaking_style,
-                topic=topic[:500],
-                history=history_text if history_text else "No discussion yet. You speak first."
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=system_message,
+                temperature=0.7
             )
-            
-            result = await self.llm.ainvoke(formatted)
             return result.content
             
         except Exception as e:
@@ -327,13 +296,33 @@ Respond in JSON format:
         
         history_text = self._format_history(messages)
         
+        prompt = f"""Topic: {topic[:500]}
+
+Full discussion:
+{history_text}
+
+Analyze this discussion and provide:
+1. Whether consensus was reached
+2. Key points of agreement
+3. Key points of disagreement
+4. Recommended conclusion
+5. Action items (if any)
+
+Respond in JSON format:
+{{
+    "consensus_reached": true/false,
+    "conclusion": "Main conclusion",
+    "key_points": ["point1", "point2"],
+    "dissenting_views": ["view1"],
+    "action_items": ["action1"]
+}}"""
+        
         try:
-            formatted = self.moderator_prompt.format_messages(
-                topic=topic[:500],
-                history=history_text
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message=self.moderator_system,
+                temperature=0.3
             )
-            
-            result = await self.llm.ainvoke(formatted)
             return json.loads(result.content)
             
         except Exception as e:
@@ -394,13 +383,13 @@ class ExpertPanel(GroupChat):
     }
     
     @classmethod
-    def create_panel(cls, domain: str, llm: Optional[ChatOpenAI] = None) -> 'ExpertPanel':
+    def create_panel(cls, domain: str, llm_service: Optional[LLMService] = None) -> 'ExpertPanel':
         """Create an expert panel for a specific domain"""
         if domain not in cls.PANELS:
             domain = "technical"  # Default
         
         return cls(
-            llm=llm,
+            llm_service=llm_service,
             participants=cls.PANELS[domain],
             max_rounds=2
         )

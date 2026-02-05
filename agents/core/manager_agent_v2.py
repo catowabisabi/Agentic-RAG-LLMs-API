@@ -29,8 +29,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -45,7 +43,6 @@ from agents.shared_services.task_planning import (
     ExecutionPlan, TodoItem, TaskStatus, TaskPriority,
     PlanningRequest, PlanningResponse
 )
-from config.config import Config
 
 # Import Agentic components
 try:
@@ -106,12 +103,8 @@ class ManagerAgentV2(BaseAgent):
             agent_description="Agentic orchestrator with metacognition and self-correction"
         )
         
-        self.config = Config()
-        self.llm = ChatOpenAI(
-            model=self.config.DEFAULT_MODEL,
-            temperature=0.2,
-            api_key=self.config.OPENAI_API_KEY
-        )
+        # Load prompt configuration
+        self.prompt_template = self.prompt_manager.get_prompt("manager_agent")
         
         self.registry = AgentRegistry()
         self.ws_manager = WebSocketManager()
@@ -410,8 +403,12 @@ class ManagerAgentV2(BaseAgent):
         Fallback: Create a simple single-step plan using LLM
         """
         # Determine best agent for the query
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze this query and determine the best approach:
+        agent_list = "\n".join([
+            f"- {name}: {info['description']}"
+            for name, info in self.agent_capabilities.items()
+        ])
+        
+        prompt = f"""Analyze this query and determine the best approach:
 
 Query: "{query}"
 
@@ -425,16 +422,11 @@ Respond with:
 4. needs_rag: Does this need to search knowledge bases? (true/false)
 
 Format: goal|agent|task_type|needs_rag"""
-        )
-        
-        agent_list = "\n".join([
-            f"- {name}: {info['description']}"
-            for name, info in self.agent_capabilities.items()
-        ])
         
         try:
-            result = await self.llm.ainvoke(
-                prompt.format(query=query, agent_list=agent_list)
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                temperature=0.2
             )
             content = result.content if hasattr(result, 'content') else str(result)
             
@@ -609,7 +601,7 @@ Context from previous steps:
 
 Provide a helpful response."""
         
-        result = await self.llm.ainvoke(prompt)
+        result = await self.llm_service.generate(prompt=prompt)
         content = result.content if hasattr(result, 'content') else str(result)
         
         return {"response": content}

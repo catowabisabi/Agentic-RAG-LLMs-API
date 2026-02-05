@@ -18,11 +18,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from config.config import Config
+from services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +56,13 @@ class IntentRouter:
         if self._initialized:
             return
             
-        self.config = Config()
         self.config_path = Path(__file__).parent.parent.parent / "config" / "intents.yaml"
         self.intents: Dict[str, Dict] = {}
         self.compiled_patterns: Dict[str, List[re.Pattern]] = {}
         self.last_loaded: Optional[datetime] = None
         
-        # LLM for fallback classification
-        self.llm = ChatOpenAI(
-            model=self.config.FAST_MODEL if hasattr(self.config, 'FAST_MODEL') else "gpt-4o-mini",
-            temperature=0,
-            api_key=self.config.OPENAI_API_KEY,
-            max_tokens=100
-        )
+        # LLM Service for fallback classification
+        self.llm_service = LLMService()
         
         self._load_config()
         self._initialized = True
@@ -182,8 +174,9 @@ class IntentRouter:
             for name, config in self.intents.items()
         ])
         
-        prompt = ChatPromptTemplate.from_template("""
-分類這個用戶輸入的意圖。
+        system_message = "你是一個意圖分類器，只回答意圖名稱，不要解釋。如果不確定，回答 general_query。"
+        
+        prompt = f"""分類這個用戶輸入的意圖。
 
 可用意圖：
 {intent_list}
@@ -191,10 +184,13 @@ class IntentRouter:
 用戶輸入: "{message}"
 
 只回答意圖名稱，不要解釋。如果不確定，回答 "general_query"。
-""")
+"""
         
-        chain = prompt | self.llm
-        result = chain.invoke({"message": message, "intent_list": intent_list})
+        # Use synchronous generate (intent_router is not async)
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            self.llm_service.generate(prompt=prompt, system_message=system_message, temperature=0)
+        )
         intent_name = result.content.strip().lower().replace(" ", "_")
         
         # Validate intent exists

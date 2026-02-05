@@ -13,7 +13,6 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import json
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from pydantic import BaseModel, Field
 
@@ -24,7 +23,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     ValidationResult
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 

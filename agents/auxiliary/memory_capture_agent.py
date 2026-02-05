@@ -140,17 +140,12 @@ If nothing worth remembering, respond:
 """
         
         try:
-            from langchain_openai import ChatOpenAI
-            from config.config import Config
-            config = Config()
-            llm = ChatOpenAI(
-                model=config.DEFAULT_MODEL,
-                temperature=0.3,
-                api_key=config.OPENAI_API_KEY
+            result = await self.llm_service.generate(
+                prompt_key="memory_capture_agent",
+                user_input=prompt,
+                temperature=0.3
             )
-            
-            result = await llm.ainvoke(prompt)
-            content = result.content if hasattr(result, 'content') else str(result)
+            content = result.get("content", "")
             
             # Parse JSON from response
             import json

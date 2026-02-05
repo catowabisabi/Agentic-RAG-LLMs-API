@@ -118,7 +118,7 @@ export default function SettingsPage() {
                 { method: 'GET', path: '/agents/', desc: 'List Agents' },
                 { method: 'GET', path: '/agents/health', desc: 'System Health' },
                 { method: 'POST', path: '/agents/task', desc: 'Send Task' },
-                { method: 'POST', path: '/chat/message', desc: 'Send Chat Message' },
+                { method: 'POST', path: '/chat/send', desc: 'Send Chat Message' },
                 { method: 'POST', path: '/rag/query', desc: 'RAG Query' },
                 { method: 'POST', path: '/rag/document', desc: 'Add Document' },
                 { method: 'WS', path: '/ws', desc: 'WebSocket' },

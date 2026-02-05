@@ -83,6 +83,7 @@ class TaskStatusResponse(BaseModel):
 # ========================================
 
 @router.post("/send", response_model=ChatResponse | AsyncChatResponse)
+@router.post("/message", response_model=ChatResponse | AsyncChatResponse, include_in_schema=False)  # Alias for backward compatibility
 async def send_message(request: ChatRequest):
     """
     發送消息並獲取響應
@@ -154,7 +155,8 @@ async def _process_async_task(task_id: str, request: ChatRequest):
     
     chat_service = get_chat_service()
     
-    async def _task_handler():
+    async def _task_handler(tid: str):
+        """Handler that accepts task_id from task_manager"""
         return await chat_service.process_message(
             message=request.message,
             conversation_id=request.conversation_id,

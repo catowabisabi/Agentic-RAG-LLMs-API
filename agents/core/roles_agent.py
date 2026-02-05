@@ -12,8 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from agents.shared_services.base_agent import BaseAgent
@@ -24,7 +22,6 @@ from agents.shared_services.message_protocol import (
     TaskAssignment,
     RoleAssignment
 )
-from config.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -211,43 +208,24 @@ class RolesAgent(BaseAgent):
     ) -> RoleCorrection:
         """Analyze errors and determine correction"""
         
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze these errors from an AI agent and determine if role correction is needed.
-
-Agent: {agent_name}
-Role: {role_name}
-Description: {role_description}
-Expected Output: {expected_output}
-Constraints: {constraints}
-
-Recent Errors:
-{errors}
-
-Determine:
-1. Is role correction needed? (Only if the agent is misunderstanding its role)
-2. What type of error is this? (role_confusion, constraint_violation, output_format, other)
-3. What specific guidance would help?
-4. How severe is this? (low, medium, high)
-
-Provide your analysis."""
-        )
-        
         errors_text = "\n".join([
             f"- {e.get('error', 'Unknown')}: {e.get('details', {})}"
             for e in errors
         ])
         
-        chain = prompt | self.llm.with_structured_output(RoleCorrection)
-        
         try:
-            correction = await chain.ainvoke({
-                "agent_name": agent_name,
-                "role_name": role.role_name,
-                "role_description": role.role_description,
-                "expected_output": role.expected_output,
-                "constraints": ", ".join(role.constraints),
-                "errors": errors_text
-            })
+            correction = await self.llm_service.generate_with_structured_output(
+                prompt_key="roles_agent",
+                output_schema=RoleCorrection,
+                variables={
+                    "agent_name": agent_name,
+                    "role_name": role.role_name,
+                    "role_description": role.role_description,
+                    "expected_output": role.expected_output,
+                    "constraints": ", ".join(role.constraints),
+                    "errors": errors_text
+                }
+            )
             return correction
         except Exception as e:
             logger.error(f"Error analyzing correction: {e}")
@@ -272,12 +250,11 @@ Provide your analysis."""
         
         role = self.agent_roles[target_agent]
         
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze this error in the context of the agent's role.
+        prompt = f"""Analyze this error in the context of the agent's role.
 
-Agent: {agent_name}
-Role: {role_name}
-Role Description: {role_description}
+Agent: {target_agent}
+Role: {role.role_name}
+Role Description: {role.role_description}
 
 Error: {error}
 
@@ -285,21 +262,16 @@ Provide:
 1. Root cause analysis
 2. Is this a role violation or execution error?
 3. Recommendations"""
+        
+        result = await self.llm_service.generate(
+            prompt_key="roles_agent",
+            user_input=prompt
         )
-        
-        chain = prompt | self.llm
-        
-        result = await chain.ainvoke({
-            "agent_name": target_agent,
-            "role_name": role.role_name,
-            "role_description": role.role_description,
-            "error": error
-        })
         
         return {
             "agent": target_agent,
             "error": error,
-            "analysis": result.content
+            "analysis": result.get("content", "")
         }
     
     async def _get_role(self, task: TaskAssignment) -> Dict[str, Any]:
