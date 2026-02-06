@@ -149,6 +149,65 @@ async def send_message(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ========================================
+# Architecture V2: Agentic Loop Endpoint
+# ========================================
+
+class AgenticChatRequest(BaseModel):
+    """Agentic chat request"""
+    message: str = Field(description="User message")
+    conversation_id: Optional[str] = Field(default=None, description="Conversation ID")
+    user_id: Optional[str] = Field(default="default", description="User ID")
+    use_rag: bool = Field(default=True, description="Whether to use RAG")
+    enable_memory: bool = Field(default=True, description="Enable memory")
+
+
+class AgenticChatResponse(BaseModel):
+    """Agentic chat response"""
+    response: str
+    conversation_id: str
+    agents_involved: List[str]
+    thinking_steps: List[Dict[str, Any]] = []
+    execution_summary: Optional[Dict[str, Any]] = None
+    timestamp: str
+
+
+@router.post("/agentic", response_model=AgenticChatResponse)
+async def send_agentic_message(request: AgenticChatRequest):
+    """
+    使用 Agentic Loop Engine 處理消息
+    
+    Architecture V2 特性：
+    - 無限反饋循環
+    - LLM 決策驅動
+    - 任務狀態追蹤
+    - 自動重試（最多 5 次）
+    
+    NOTE: 測試模式 - 錯誤直接傳播，不使用 fallback
+    """
+    chat_service = get_chat_service()
+    
+    # NOTE: No try-catch - errors propagate for testing visibility
+    # TODO: Add proper error handling for production
+    
+    result = await chat_service.process_message_agentic(
+        message=request.message,
+        conversation_id=request.conversation_id,
+        user_id=request.user_id,
+        use_rag=request.use_rag,
+        enable_memory=request.enable_memory
+    )
+    
+    return AgenticChatResponse(
+        response=result.response,
+        conversation_id=result.conversation_id,
+        agents_involved=result.agents_involved,
+        thinking_steps=result.metadata.get("thinking_steps", []),
+        execution_summary=result.metadata.get("execution_summary"),
+        timestamp=result.timestamp
+    )
+
+
 async def _process_async_task(task_id: str, request: ChatRequest):
     """後台任務處理器"""
     from services.task_manager import task_manager

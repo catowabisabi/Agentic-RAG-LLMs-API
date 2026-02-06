@@ -41,6 +41,10 @@ from services.unified_event_manager import (
     EventType, Stage, TokenInfo
 )
 
+# Architecture V2: Agentic Loop Engine
+from agents.core.agentic_loop_engine import AgenticLoopEngine, create_agentic_loop
+from agents.core.agentic_task_queue import TodoTask, TodoStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +92,76 @@ class ChatService:
         self.conversations: Dict[str, List[Dict]] = {}
         # 統一事件管理器
         self.event_manager = init_event_manager(self.ws_manager, session_db)
+        
+        # Architecture V2: Agentic Loop Engine (初始化時不創建，按需創建)
+        self._agentic_loop: Optional[AgenticLoopEngine] = None
+    
+    def _get_agentic_loop(self, session_id: str) -> AgenticLoopEngine:
+        """
+        獲取 Agentic Loop Engine（按需創建）
+        
+        Architecture V2: 連接 AgenticLoopEngine 回調到 UnifiedEventManager
+        """
+        async def on_thinking(step_type: str, content: str, metadata: Dict):
+            """思考步驟回調 -> 發送到 WebSocket"""
+            await self.event_manager.emit_thinking(
+                session_id=session_id,
+                task_id=metadata.get("task_id", session_id),
+                agent_name=metadata.get("agent", "agentic_loop"),
+                message=f"[{step_type}] {content}",
+                data=metadata
+            )
+        
+        async def on_task_update(task: TodoTask):
+            """任務更新回調 -> 發送到 WebSocket"""
+            stage = Stage.EXECUTING
+            if task.status == TodoStatus.COMPLETED:
+                stage = Stage.COMPLETE
+            elif task.status == TodoStatus.FAILED:
+                stage = Stage.FAILED
+            
+            await self.event_manager.emit(
+                session_id=session_id,
+                task_id=task.id,
+                event_type=EventType.PROGRESS,
+                stage=stage,
+                agent_name=task.assigned_agent or "agentic_loop",
+                message=f"任務 '{task.title}': {task.status}",
+                data={
+                    "task_id": task.id,
+                    "title": task.title,
+                    "status": task.status,
+                    "retry_count": task.retry_count
+                }
+            )
+        
+        async def on_intermediate(task_id: str, result: Dict, message: str):
+            """中間結果回調 -> 發送到 WebSocket"""
+            await self.event_manager.emit(
+                session_id=session_id,
+                task_id=task_id,
+                event_type=EventType.STATUS,
+                stage=Stage.SYNTHESIS,
+                agent_name="agentic_loop",
+                message=f"中間結果: {message}",
+                data={"intermediate_result": result}
+            )
+        
+        async def on_final(summary: str):
+            """最終回應回調 -> 發送到 WebSocket"""
+            await self.event_manager.emit_result(
+                session_id=session_id,
+                task_id=session_id,
+                message="處理完成",
+                answer=summary
+            )
+        
+        return create_agentic_loop(
+            on_thinking=on_thinking,
+            on_task=on_task_update,
+            on_intermediate=on_intermediate,
+            on_final=on_final
+        )
     
     # ========================================
     # 會話管理
@@ -501,6 +575,149 @@ class ChatService:
             )
             
             raise
+    
+    # ========================================
+    # Architecture V2: Agentic Loop 處理
+    # ========================================
+    
+    async def process_message_agentic(
+        self,
+        message: str,
+        conversation_id: Optional[str] = None,
+        user_id: str = "default",
+        use_rag: bool = True,
+        enable_memory: bool = True,
+        context: Dict[str, Any] = None
+    ) -> ProcessingResult:
+        """
+        使用 Agentic Loop Engine 處理消息
+        
+        Architecture V2: 無限反饋循環，任務驅動，LLM 決策
+        
+        NOTE: 測試模式 - 不使用 fallback，錯誤直接傳播
+        TODO: 生產環境需要添加適當的錯誤處理
+        
+        Args:
+            message: 用戶消息
+            conversation_id: 會話 ID
+            user_id: 用戶 ID
+            use_rag: 是否使用 RAG
+            enable_memory: 是否啟用記憶
+            context: 額外上下文
+            
+        Returns:
+            ProcessingResult
+        """
+        context = context or {}
+        
+        # 獲取或創建會話
+        conversation_id = self.get_or_create_conversation(conversation_id)
+        
+        # 創建任務 UID
+        task_uid = f"agentic_{datetime.now().strftime('%Y%m%d%H%M%S')}_{conversation_id}"
+        
+        # 添加用戶消息
+        self.add_user_message(conversation_id, message, task_uid)
+        
+        # 創建數據庫任務
+        db_task = session_db.create_task(
+            session_id=conversation_id,
+            agent_name="agentic_loop",
+            task_type="agentic_query",
+            description=message[:200],
+            input_data={
+                "query": message,
+                "use_rag": use_rag,
+                "context": context,
+                "user_id": user_id
+            }
+        )
+        task_uid = db_task.task_uid
+        
+        # 更新任務狀態
+        session_db.update_task_status(task_uid, DBTaskStatus.RUNNING)
+        
+        # 發送初始化事件
+        await self.event_manager.emit_init(
+            session_id=conversation_id,
+            task_id=task_uid,
+            message="收到您的訊息，正在啟動 Agentic Loop..."
+        )
+        
+        # 獲取用戶上下文
+        user_context = self.get_user_context(user_id, message, enable_memory)
+        
+        # NOTE: No try-catch - errors propagate for testing visibility
+        # TODO: Add proper error handling for production
+        
+        # 獲取 Agentic Loop Engine
+        agentic_loop = self._get_agentic_loop(conversation_id)
+        
+        # 構建上下文字符串
+        context_str = ""
+        if user_context:
+            context_str += f"User Context: {user_context}\n"
+        if use_rag:
+            rag_context, _ = await self.get_rag_context(message)
+            if rag_context:
+                context_str += f"RAG Context: {rag_context[:2000]}\n"
+        
+        # 運行 Agentic Loop
+        result = await agentic_loop.run(
+            user_query=message,
+            session_id=conversation_id,
+            context_str=context_str
+        )
+        
+        # 如果是閒聊，使用簡單處理
+        if result.get("is_casual"):
+            # 使用原有的 casual chat 處理
+            chat_history = self.get_conversation_history(conversation_id)
+            response_text, agents_involved = await self._process_casual_chat(
+                message=message,
+                chat_history=chat_history,
+                user_context=user_context,
+                task_uid=task_uid,
+                conversation_id=conversation_id
+            )
+        else:
+            response_text = result.get("summary", str(result))
+            agents_involved = ["agentic_loop"]
+            if result.get("execution_summary"):
+                agents_involved.extend(
+                    task["agent"] 
+                    for task in result["execution_summary"].get("tasks", {}).values()
+                    if task.get("agent")
+                )
+        
+        # 添加助手消息
+        self.add_assistant_message(
+            conversation_id=conversation_id,
+            message=response_text,
+            task_uid=task_uid,
+            agents_involved=agents_involved,
+            sources=[]  # TODO: 從 result 中提取 sources
+        )
+        
+        # 更新任務狀態
+        session_db.update_task_status(task_uid, DBTaskStatus.COMPLETED)
+        
+        # 捕獲記憶
+        if enable_memory:
+            await self.capture_memory(user_id, message, response_text, conversation_id)
+        
+        return ProcessingResult(
+            response=response_text,
+            conversation_id=conversation_id,
+            agents_involved=agents_involved,
+            sources=[],
+            task_uid=task_uid,
+            metadata={
+                "agentic": True,
+                "thinking_steps": result.get("thinking_steps", []),
+                "execution_summary": result.get("execution_summary")
+            }
+        )
     
     async def _process_casual_chat(
         self,

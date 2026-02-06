@@ -103,45 +103,49 @@ User: "What can you do?"
     async def _check_capabilities(self, query: str) -> CapabilityCheck:
         """
         Ask the Classifier Agent if this query fits the 'Casual Agent' persona.
-        Uses LLM to make the decision.
+        
+        Architecture V2 Design:
+        - LLM is the primary decision maker
+        - NO FALLBACK: errors propagate for testing visibility
         """
-        # Use the centralized Classifier Agent (LLM-powered)
         from agents.auxiliary.classifier_agent import ClassifierAgent
         
         classifier = ClassifierAgent()
         
-        criterion = """
-        Is this query purely 'Casual Chat' (chitchat, greetings, social, emotional connection)?
+        # Clear criterion with explicit examples including short messages
+        criterion = f"""
+        Determine if this user message is 'Casual Chat'.
         
-        YES criteria (Return True):
-        - Greetings ("Hi", "How are you?")
-        - Social interactions ("You are funny", "I'm sad")
-        - Simple identity questions ("Who are you?")
+        USER MESSAGE: "{query}"
         
-        NO criteria (Return False - Technical/Knowledge/Task):
-        - "What data do you have?"
-        - "Can you analyze this?"
-        - "How do I use python?"
-        - "Search for X"
-        - "Plan a trip"
-        - Requests to perform specific tasks or look up info.
+        Return TRUE (is casual chat) if:
+        - Greetings: "Hi", "Hello!", "Hey", "你好", "早安"
+        - Farewells: "Bye", "See you", "再見"
+        - Thanks: "Thanks!", "Thank you", "謝謝"
+        - Social: "How are you?", "What's up?", "I'm happy"
+        - Identity questions: "Who are you?", "What's your name?"
+        - Simple acknowledgments: "OK", "Sure", "Yes", "好"
+        
+        Return FALSE (NOT casual chat, needs specialist) if:
+        - Technical questions: "How do I use Python?"
+        - Data requests: "What data do you have?"
+        - Task requests: "Search for X", "Analyze this"
+        - Complex queries requiring knowledge lookup
+        
+        IMPORTANT: Short messages like "Hello!" or "Hi" ARE casual chat, not empty content.
         """
         
-        try:
-            # Use the shared classifier
-            result = await classifier.classify(
-                content=query,
-                criterion=criterion,
-                context="User is interacting with a Casual Chat Agent. We need to decide if we should handle it or escalate to a specialist."
-            )
-            
-            return CapabilityCheck(
-                can_handle=result.get("decision", False),
-                reason=result.get("reason", "Classifier decision")
-            )
-        except Exception as e:
-            logger.error(f"Capability check with ClassifierAgent failed: {e}")
-            return CapabilityCheck(can_handle=False, reason=f"Check failed: {e}")
+        # NOTE: No try-catch - errors MUST propagate for testing visibility
+        result = await classifier.classify(
+            content=query,
+            criterion=criterion,
+            context=f"The user sent: '{query}'. Determine if this is casual chat or needs specialist handling."
+        )
+        
+        return CapabilityCheck(
+            can_handle=result.get("decision", False),
+            reason=result.get("reason", "Classifier decision")
+        )
 
     async def process_task(self, task: TaskAssignment) -> Dict[str, Any]:
         """

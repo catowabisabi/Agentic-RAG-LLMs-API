@@ -128,20 +128,27 @@ class IntentRouter:
     
     async def match(self, message: str, user_context: str = "") -> IntentMatch:
         """
-        Match user message to an intent
+        Match user message to an intent using LLM decision.
         
-        1. First try pattern matching (fast)
-        2. If no match, use LLM (smart)
-        3. Default to general_query
+        Architecture V2 Design:
+        - Pattern matching is for acceleration only (common cases)
+        - LLM is the primary decision maker
+        - NO FALLBACK: errors propagate for testing visibility
+        
+        Flow:
+        1. Pattern matching (fast path for known patterns)
+        2. LLM classification (primary decision)
+        3. Error propagates if LLM fails (no silent fallback)
         """
         message_clean = message.strip()
         
-        # Step 1: Pattern matching
+        # Step 1: Pattern matching (acceleration for known patterns)
+        # NOTE: This is NOT a fallback, just acceleration for common cases
         for intent_name, patterns in self.compiled_patterns.items():
             for pattern in patterns:
                 if pattern.search(message_clean):
                     intent_config = self.intents[intent_name]
-                    logger.debug(f"Pattern matched: {intent_name}")
+                    logger.info(f"[IntentRouter] Pattern matched: {intent_name}")
                     return IntentMatch(
                         intent=intent_name,
                         confidence=0.95,
@@ -150,21 +157,11 @@ class IntentRouter:
                         matched_by="pattern"
                     )
         
-        # Step 2: LLM fallback (if enabled)
-        if self.llm_fallback_enabled:
-            try:
-                return await self._llm_classify_async(message)
-            except Exception as e:
-                logger.warning(f"LLM fallback failed: {e}, using default")
-        
-        # Step 3: Default
-        return IntentMatch(
-            intent="general_query",
-            confidence=0.5,
-            route_to="manager_agent",
-            handler=None,
-            matched_by="default"
-        )
+        # Step 2: LLM classification (primary decision maker)
+        # NOTE: No try-catch - errors MUST propagate for testing visibility
+        # TODO: Add proper error handling for production (after testing complete)
+        logger.info(f"[IntentRouter] No pattern match, using LLM for: {message_clean[:50]}...")
+        return await self._llm_classify_async(message)
     
     async def _llm_classify_async(self, message: str) -> IntentMatch:
         """Use LLM to classify intent (async version)"""
