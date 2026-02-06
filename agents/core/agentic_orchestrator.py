@@ -536,85 +536,82 @@ Always cite sources when using specific information from the retrieved content."
             })
         
         # Step 3: Execute Strategy
-        try:
-            if analysis.strategy == AgentStrategy.DIRECT_ANSWER:
-                response = await self.execute_direct_answer(query, chat_history)
-                return OrchestratorResult(
-                    response=response,
-                    strategy_used=AgentStrategy.DIRECT_ANSWER,
-                    confidence=analysis.confidence,
-                    sources=[],
-                    reasoning_trace="Direct answer - no retrieval needed",
-                    verification_passed=True,
-                    iterations=1,
-                    metacognitive_analysis=analysis
-                )
-            
-            elif analysis.strategy == AgentStrategy.SINGLE_RAG:
-                result = await self.execute_single_rag(query, chat_history)
-                return OrchestratorResult(
-                    response=result["response"],
-                    strategy_used=AgentStrategy.SINGLE_RAG,
-                    confidence=analysis.confidence,
-                    sources=result.get("sources", []),
-                    reasoning_trace="Single RAG retrieval",
-                    verification_passed=True,
-                    iterations=1,
-                    metacognitive_analysis=analysis
-                )
-            
-            elif analysis.strategy == AgentStrategy.REACT_ITERATIVE:
-                result = await self.execute_react_iterative(
-                    query=query,
-                    chat_history=chat_history,
-                    enable_verification=analysis.requires_verification
-                )
-                return OrchestratorResult(
-                    response=result["response"],
-                    strategy_used=AgentStrategy.REACT_ITERATIVE,
-                    confidence=analysis.confidence,
-                    sources=result.get("sources", []),
-                    reasoning_trace=result.get("reasoning_trace", ""),
-                    verification_passed=result.get("verification_passed", True),
-                    iterations=result.get("iterations", 1),
-                    metacognitive_analysis=analysis
-                )
-            
-            elif analysis.strategy == AgentStrategy.ESCALATE:
-                return OrchestratorResult(
-                    response=(
-                        "This question appears to require expertise beyond my capabilities. "
-                        f"Reason: {analysis.reasoning}\n\n"
-                        "I recommend consulting a qualified professional for accurate information."
-                    ),
-                    strategy_used=AgentStrategy.ESCALATE,
-                    confidence=analysis.confidence,
-                    sources=[],
-                    reasoning_trace="Escalated - outside capability boundary",
-                    verification_passed=True,
-                    iterations=1,
-                    metacognitive_analysis=analysis
-                )
-            
-            elif analysis.strategy == AgentStrategy.CLARIFY:
-                return OrchestratorResult(
-                    response=f"I'd like to help, but I need some clarification: {analysis.reasoning}",
-                    strategy_used=AgentStrategy.CLARIFY,
-                    confidence=analysis.confidence,
-                    sources=[],
-                    reasoning_trace="Clarification requested",
-                    verification_passed=True,
-                    iterations=1,
-                    metacognitive_analysis=analysis
-                )
-            
-            else:
-                # [NO FALLBACK] Strategy selection must be explicit
-                # If no strategy is determined, raise error for visibility
-                raise ValueError(f"No valid strategy selected by Metacognition for query: {query[:50]}...")
         # [NO FALLBACK] Errors propagate for testing visibility
-        # except Exception as e:
-        #     ...
+        if analysis.strategy == AgentStrategy.DIRECT_ANSWER:
+            response = await self.execute_direct_answer(query, chat_history)
+            return OrchestratorResult(
+                response=response,
+                strategy_used=AgentStrategy.DIRECT_ANSWER,
+                confidence=analysis.confidence,
+                sources=[],
+                reasoning_trace="Direct answer - no retrieval needed",
+                verification_passed=True,
+                iterations=1,
+                metacognitive_analysis=analysis
+            )
+        
+        elif analysis.strategy == AgentStrategy.SINGLE_RAG:
+            result = await self.execute_single_rag(query, chat_history)
+            return OrchestratorResult(
+                response=result["response"],
+                strategy_used=AgentStrategy.SINGLE_RAG,
+                confidence=analysis.confidence,
+                sources=result.get("sources", []),
+                reasoning_trace="Single RAG retrieval",
+                verification_passed=True,
+                iterations=1,
+                metacognitive_analysis=analysis
+            )
+        
+        elif analysis.strategy == AgentStrategy.REACT_ITERATIVE:
+            result = await self.execute_react_iterative(
+                query=query,
+                chat_history=chat_history,
+                enable_verification=analysis.requires_verification
+            )
+            return OrchestratorResult(
+                response=result["response"],
+                strategy_used=AgentStrategy.REACT_ITERATIVE,
+                confidence=analysis.confidence,
+                sources=result.get("sources", []),
+                reasoning_trace=result.get("reasoning_trace", ""),
+                verification_passed=result.get("verification_passed", True),
+                iterations=result.get("iterations", 1),
+                metacognitive_analysis=analysis
+            )
+        
+        elif analysis.strategy == AgentStrategy.ESCALATE:
+            return OrchestratorResult(
+                response=(
+                    "This question appears to require expertise beyond my capabilities. "
+                    f"Reason: {analysis.reasoning}\n\n"
+                    "I recommend consulting a qualified professional for accurate information."
+                ),
+                strategy_used=AgentStrategy.ESCALATE,
+                confidence=analysis.confidence,
+                sources=[],
+                reasoning_trace="Escalated - outside capability boundary",
+                verification_passed=True,
+                iterations=1,
+                metacognitive_analysis=analysis
+            )
+        
+        elif analysis.strategy == AgentStrategy.CLARIFY:
+            return OrchestratorResult(
+                response=f"I'd like to help, but I need some clarification: {analysis.reasoning}",
+                strategy_used=AgentStrategy.CLARIFY,
+                confidence=analysis.confidence,
+                sources=[],
+                reasoning_trace="Clarification requested",
+                verification_passed=True,
+                iterations=1,
+                metacognitive_analysis=analysis
+            )
+        
+        else:
+            # [NO FALLBACK] Strategy selection must be explicit
+            # If no strategy is determined, raise error for visibility
+            raise ValueError(f"No valid strategy selected by Metacognition for query: {query[:50]}...")
 
 
 # 單例

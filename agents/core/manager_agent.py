@@ -239,34 +239,26 @@ User query: "{query}"
 Respond with ONLY the category name and a brief reason.
 Format: category|reason"""
         
-        try:
-            result = await self.llm_service.generate(prompt=classification_prompt, temperature=0.1)
-            response = result.content if hasattr(result, 'content') else str(result)
-            
-            # Parse response
-            parts = response.strip().split("|", 1)
-            query_type = parts[0].strip().lower()
-            reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
-            
-            # Validate query_type
-            valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "complex_planning"]
-            if query_type not in valid_types:
-                # [NO FALLBACK] LLM must return valid type - raise error for visibility
-                raise ValueError(f"LLM returned invalid query type: {query_type}. Valid types: {valid_types}")
-                
-            return QueryClassification(
-                query_type=query_type,
-                reasoning=reasoning,
-                confidence=0.85
-            )
         # [NO FALLBACK] Errors propagate for testing visibility
-        # except Exception as e:
-        #     logger.warning(f"[Manager] Classification failed: {e}, defaulting to simple_rag")
-        #     return QueryClassification(
-        #         query_type="simple_rag",
-        #         reasoning=f"Classification error, using default: {e}",
-        #         confidence=0.5
-        #     )
+        result = await self.llm_service.generate(prompt=classification_prompt, temperature=0.1)
+        response = result.content if hasattr(result, 'content') else str(result)
+        
+        # Parse response
+        parts = response.strip().split("|", 1)
+        query_type = parts[0].strip().lower()
+        reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
+        
+        # Validate query_type
+        valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "complex_planning"]
+        if query_type not in valid_types:
+            # [NO FALLBACK] LLM must return valid type - raise error for visibility
+            raise ValueError(f"LLM returned invalid query type: {query_type}. Valid types: {valid_types}")
+            
+        return QueryClassification(
+            query_type=query_type,
+            reasoning=reasoning,
+            confidence=0.85
+        )
     
     async def _handle_knowledge_inventory(self, task: TaskAssignment) -> Dict[str, Any]:
         """
@@ -776,76 +768,76 @@ Guidelines:
         
         if use_react:
             # ============== ReAct Loop Mode ==============
-            try:
-                from agents.core.react_loop import get_react_loop, ActionType
+            # [NO FALLBACK] Errors propagate for testing visibility
+            from agents.core.react_loop import get_react_loop, ActionType
+            
+            react_loop = get_react_loop(max_iterations=3)
+            
+            # Register RAG search tool
+            async def rag_search_tool(search_query: str) -> Dict[str, Any]:
+                """RAG search tool for ReAct"""
+                rag_agent = self.registry.get_agent("rag_agent")
+                if not rag_agent:
+                    return {"content": "RAG agent not available", "sources": []}
                 
-                react_loop = get_react_loop(max_iterations=3)
-                
-                # Register RAG search tool
-                async def rag_search_tool(search_query: str) -> Dict[str, Any]:
-                    """RAG search tool for ReAct"""
-                    rag_agent = self.registry.get_agent("rag_agent")
-                    if not rag_agent:
-                        return {"content": "RAG agent not available", "sources": []}
-                    
-                    rag_task = TaskAssignment(
-                        task_id=f"{task_id}-search",
-                        task_type="query_knowledge",
-                        description=search_query,
-                        input_data={"query": search_query}
-                    )
-                    
-                    # Broadcast search event
-                    await self.ws_manager.broadcast_agent_activity({
-                        "type": "task_assigned",
-                        "agent": "rag_agent",
-                        "source": self.agent_name,
-                        "target": "rag_agent",
-                        "content": {"task": "search", "query": search_query[:100]},
-                        "timestamp": datetime.now().isoformat(),
-                        "priority": 1
-                    })
-                    
-                    result = await rag_agent.process_task(rag_task)
-                    
-                    if isinstance(result, dict):
-                        return {
-                            "content": result.get("context", ""),
-                            "sources": result.get("sources", [])
-                        }
-                    return {"content": str(result), "sources": []}
-                
-                react_loop.register_tool(ActionType.SEARCH, rag_search_tool)
-                
-                # Define step callback for real-time updates
-                async def on_react_step(step):
-                    await self.ws_manager.broadcast_agent_activity({
-                        "type": "thinking",
-                        "agent": self.agent_name,
-                        "source": self.agent_name,
-                        "content": {
-                            "step": step.step_number,
-                            "thought": step.thought[:200],
-                            "action": step.action.value
-                        },
-                        "timestamp": datetime.now().isoformat(),
-                        "priority": 1
-                    })
-                
-                react_loop.on_step_callback = on_react_step
-                agents_involved.append("react_loop")
-                
-                # Execute ReAct loop
-                result = await react_loop.run(
-                    query=query,
-                    initial_context=memory_context
+                rag_task = TaskAssignment(
+                    task_id=f"{task_id}-search",
+                    task_type="query_knowledge",
+                    description=search_query,
+                    input_data={"query": search_query}
                 )
                 
-                response_text = result.final_answer
-                sources = result.sources
-                reasoning_trace = result.reasoning_trace
+                # Broadcast search event
+                await self.ws_manager.broadcast_agent_activity({
+                    "type": "task_assigned",
+                    "agent": "rag_agent",
+                    "source": self.agent_name,
+                    "target": "rag_agent",
+                    "content": {"task": "search", "query": search_query[:100]},
+                    "timestamp": datetime.now().isoformat(),
+                    "priority": 1
+                })
                 
-                logger.info(f"[Manager] ReAct completed in {result.total_iterations} iterations")
+                result = await rag_agent.process_task(rag_task)
+                
+                if isinstance(result, dict):
+                    return {
+                        "content": result.get("context", ""),
+                        "sources": result.get("sources", [])
+                    }
+                return {"content": str(result), "sources": []}
+            
+            react_loop.register_tool(ActionType.SEARCH, rag_search_tool)
+            
+            # Define step callback for real-time updates
+            async def on_react_step(step):
+                await self.ws_manager.broadcast_agent_activity({
+                    "type": "thinking",
+                    "agent": self.agent_name,
+                    "source": self.agent_name,
+                    "content": {
+                        "step": step.step_number,
+                        "thought": step.thought[:200],
+                        "action": step.action.value
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                    "priority": 1
+                })
+            
+            react_loop.on_step_callback = on_react_step
+            agents_involved.append("react_loop")
+            
+            # Execute ReAct loop
+            result = await react_loop.run(
+                query=query,
+                initial_context=memory_context
+            )
+            
+            response_text = result.final_answer
+            sources = result.sources
+            reasoning_trace = result.reasoning_trace
+            
+            logger.info(f"[Manager] ReAct completed in {result.total_iterations} iterations")
         
         # [NO FALLBACK] ReAct loop is the ONLY path - no simple RAG fallback
         # If ReAct fails, the error should propagate for visibility

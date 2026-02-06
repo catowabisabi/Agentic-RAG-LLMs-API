@@ -432,64 +432,40 @@ Respond in JSON format:
     ]
 }}"""
         
-        try:
-            result = await self.llm_service.generate(
-                prompt_key="planning_agent",
-                user_input=plan_prompt
-            )
-            
-            content = result.get("content", "")
-            
-            # Parse JSON
-            import json
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if json_match:
-                plan_data = json.loads(json_match.group())
-                
-                # Add query to each todo's input_data
-                for todo in plan_data.get("todos", []):
-                    if "input_data" not in todo:
-                        todo["input_data"] = {}
-                    todo["input_data"]["query"] = query
-                    todo["input_data"]["user_context"] = user_context
-                
-                return {
-                    "success": True,
-                    "goal": plan_data.get("goal", query),
-                    "strategy": plan_data.get("strategy", "Direct execution"),
-                    "complexity": plan_data.get("complexity", "simple"),
-                    "todos": plan_data.get("todos", [])
-                }
-            else:
-                # [NO FALLBACK] Plan creation must succeed - errors propagate for testing
-                raise ValueError(f"LLM did not return valid plan data for query: {query[:50]}...")
-                
         # [NO FALLBACK] Errors propagate for testing visibility
-        # except Exception as e:
-        #     logger.error(f"Error creating plan: {e}")
-        #     return self._create_fallback_plan(query, user_context)
+        result = await self.llm_service.generate(
+            prompt_key="planning_agent",
+            user_input=plan_prompt
+        )
+        
+        content = result.get("content", "")
+        
+        # Parse JSON
+        import json
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            plan_data = json.loads(json_match.group())
+            
+            # Add query to each todo's input_data
+            for todo in plan_data.get("todos", []):
+                if "input_data" not in todo:
+                    todo["input_data"] = {}
+                todo["input_data"]["query"] = query
+                todo["input_data"]["user_context"] = user_context
+            
+            return {
+                "success": True,
+                "goal": plan_data.get("goal", query),
+                "strategy": plan_data.get("strategy", "Direct execution"),
+                "complexity": plan_data.get("complexity", "simple"),
+                "todos": plan_data.get("todos", [])
+            }
+        else:
+            # [NO FALLBACK] Plan creation must succeed - errors propagate for testing
+            raise ValueError(f"LLM did not return valid plan data for query: {query[:50]}...")
     
-    def _create_fallback_plan(self, query: str, user_context: str = "") -> Dict[str, Any]:
-        """Create a simple fallback plan"""
-        return {
-            "success": True,
-            "goal": query,
-            "strategy": "Direct response",
-            "complexity": "simple",
-            "todos": [{
-                "title": "Process query",
-                "description": query,
-                "agent": "thinking_agent",
-                "task_type": "analyze",
-                "priority": "medium",
-                "depends_on": [],
-                "input_data": {
-                    "query": query,
-                    "user_context": user_context
-                }
-            }]
-        }
+    # [REMOVED] _create_fallback_plan() method - no longer used as fallback is disabled
     
     async def _create_plan_with_langgraph(self, task: TaskAssignment) -> Dict[str, Any]:
         """

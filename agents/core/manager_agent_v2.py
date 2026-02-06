@@ -203,47 +203,39 @@ class ManagerAgentV2(BaseAgent):
             "status": "Analyzing with Agentic capabilities..."
         })
         
-        try:
-            # [NO FALLBACK] 必須使用 Agentic Orchestrator
-            if not self.orchestrator:
-                raise RuntimeError("Agentic Orchestrator is required but not available. Cannot proceed without it.")
-            
-            result = await self._process_with_orchestrator(
+        # [NO FALLBACK] 必須使用 Agentic Orchestrator - errors propagate for testing visibility
+        if not self.orchestrator:
+            raise RuntimeError("Agentic Orchestrator is required but not available. Cannot proceed without it.")
+        
+        result = await self._process_with_orchestrator(
+            query=query,
+            chat_history=chat_history,
+            user_context=user_context,
+            task_id=task_id
+        )
+        # [REMOVED] Fallback to planning-driven mode
+        
+        # Metacognition: 反思結果
+        if self.metacognition and isinstance(result, dict) and result.get("response"):
+            reflection = await self.metacognition.reflect_on_response(
                 query=query,
-                chat_history=chat_history,
-                user_context=user_context,
-                task_id=task_id
+                response=result["response"],
+                strategy_used=result.get("strategy_used", "unknown"),
+                context=result.get("context_used", "")
             )
-            # [REMOVED] Fallback to planning-driven mode
-            # else:
-            #     result = await self._process_with_planning(task)
             
-            # Metacognition: 反思結果
-            if self.metacognition and isinstance(result, dict) and result.get("response"):
-                reflection = await self.metacognition.reflect_on_response(
-                    query=query,
-                    response=result["response"],
-                    strategy_used=result.get("strategy_used", "unknown"),
-                    context=result.get("context_used", "")
-                )
-                
-                # 如果評估建議重試，可以再試一次（可選）
-                if reflection.get("should_retry") and result.get("confidence", 1.0) < 0.5:
-                    logger.info("[Manager] Metacognition suggests retry, but skipping for now")
-                    result["metacognition"] = reflection
-            
-            # Broadcast: Completed
-            await self._broadcast_status("completed", task_id, {
-                "response_preview": result.get("response", "")[:200],
-                "strategy": result.get("strategy_used", "unknown")
-            })
-            
-            return result
-        # [NO FALLBACK] Errors propagate for testing visibility
-        # except Exception as e:
-        #     logger.error(f"[Manager] Task failed: {e}")
-        #     await self._broadcast_status("failed", task_id, {"error": str(e)})
-        #     return {...}
+            # 如果評估建議重試，可以再試一次（可選）
+            if reflection.get("should_retry") and result.get("confidence", 1.0) < 0.5:
+                logger.info("[Manager] Metacognition suggests retry, but skipping for now")
+                result["metacognition"] = reflection
+        
+        # Broadcast: Completed
+        await self._broadcast_status("completed", task_id, {
+            "response_preview": result.get("response", "")[:200],
+            "strategy": result.get("strategy_used", "unknown")
+        })
+        
+        return result
     
     async def _process_with_orchestrator(
         self,

@@ -100,49 +100,42 @@ class ValidationAgent(BaseAgent):
         source_agent = task.input_data.get("source_agent", "unknown")
         context = task.input_data.get("context", "")
         
-        try:
-            validation = await self.llm_service.generate_with_structured_output(
-                prompt_key="validation_agent",
-                output_schema=DetailedValidation,
-                variables={
-                    "query": original_query,
-                    "response": response,
-                    "context": context or "No context provided"
-                }
-            )
-            
-            # Track validation
-            self._track_validation(source_agent, validation)
-            
-            # Check if errors are excessive
-            await self._check_error_threshold(source_agent)
-            
-            result = {
-                "is_valid": validation.is_valid,
-                "confidence": validation.confidence,
-                "errors": validation.errors,
-                "warnings": validation.warnings,
-                "suggestions": validation.suggestions,
-                "should_retry": validation.should_retry
-            }
-            
-            # Notify frontend of validation result
-            await self.ws_manager.broadcast_to_clients({
-                "type": "validation_result",
-                "source_agent": source_agent,
-                "is_valid": validation.is_valid,
-                "error_count": len(validation.errors),
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            return result
         # [NO FALLBACK] Errors propagate for testing visibility
-        # except Exception as e:
-        #     logger.error(f"Error in validation: {e}")
-        #     return {
-        #         "is_valid": True,  # Default to valid on error
-        #         ...
-        #     }
+        validation = await self.llm_service.generate_with_structured_output(
+            prompt_key="validation_agent",
+            output_schema=DetailedValidation,
+            variables={
+                "query": original_query,
+                "response": response,
+                "context": context or "No context provided"
+            }
+        )
+        
+        # Track validation
+        self._track_validation(source_agent, validation)
+        
+        # Check if errors are excessive
+        await self._check_error_threshold(source_agent)
+        
+        result = {
+            "is_valid": validation.is_valid,
+            "confidence": validation.confidence,
+            "errors": validation.errors,
+            "warnings": validation.warnings,
+            "suggestions": validation.suggestions,
+            "should_retry": validation.should_retry
+        }
+        
+        # Notify frontend of validation result
+        await self.ws_manager.broadcast_to_clients({
+            "type": "validation_result",
+            "source_agent": source_agent,
+            "is_valid": validation.is_valid,
+            "error_count": len(validation.errors),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        return result
     
     async def _validate_data(self, task: TaskAssignment) -> Dict[str, Any]:
         """Validate structured data"""
