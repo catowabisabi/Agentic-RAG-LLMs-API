@@ -1,0 +1,247 @@
+/* ============================================================
+   ThinkingSteps 樣式
+   
+   舊版 UI 風格 + 可展開箭頭
+   ============================================================ */
+
+/* ---- 即時顯示模式 ---- */
+.thinking-steps-live {
+  margin: 8px 0;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-left: 3px solid #3b82f6;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+}
+
+.thinking-steps-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.thinking-steps-title {
+  font-weight: 600;
+  color: #374151;
+  font-size: 13px;
+}
+
+.thinking-steps-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 單個步驟 ---- */
+.thinking-step-item {
+  display: flex;
+  align-items: flex-start;
+  min-height: 28px;
+}
+
+/* 時間線 */
+.step-timeline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 20px;
+  flex-shrink: 0;
+  padding-top: 6px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #3b82f6;
+  flex-shrink: 0;
+}
+
+.step-dot-pulse {
+  animation: dotPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.7; }
+}
+
+.step-line {
+  width: 2px;
+  flex-grow: 1;
+  min-height: 12px;
+  background-color: #e5e7eb;
+}
+
+/* 步驟內容 */
+.step-content {
+  flex: 1;
+  padding: 2px 0 8px 8px;
+  min-width: 0;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.4;
+}
+
+.step-clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+
+.step-clickable:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.step-arrow {
+  font-size: 10px;
+  color: #9ca3af;
+  width: 14px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.step-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.step-agent {
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.step-message {
+  color: #6b7280;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-spinner {
+  font-size: 12px;
+  flex-shrink: 0;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 展開的詳細內容 */
+.step-details {
+  margin-top: 4px;
+  padding: 8px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+}
+
+.step-details-json {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  color: #475569;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+/* ---- 消息內嵌模式 ---- */
+.message-thinking-steps {
+  margin-top: 8px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 6px;
+}
+
+.thinking-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  width: 100%;
+  text-align: left;
+}
+
+.thinking-toggle-btn:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.thinking-toggle-arrow {
+  font-size: 10px;
+  color: #9ca3af;
+  width: 12px;
+}
+
+.thinking-toggle-icon {
+  font-size: 14px;
+}
+
+.thinking-toggle-text {
+  font-weight: 500;
+}
+
+.thinking-steps-expanded {
+  padding: 8px 0 4px 8px;
+}
+
+/* ---- 深色模式 ---- */
+@media (prefers-color-scheme: dark) {
+  .thinking-steps-live {
+    background: #1e293b;
+    border-left-color: #60a5fa;
+  }
+
+  .thinking-steps-title {
+    color: #e2e8f0;
+  }
+
+  .step-line {
+    background-color: #334155;
+  }
+
+  .step-clickable:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .step-message {
+    color: #94a3b8;
+  }
+
+  .step-details {
+    background: #0f172a;
+    border-color: #334155;
+  }
+
+  .step-details-json {
+    color: #94a3b8;
+  }
+
+  .message-thinking-steps {
+    border-top-color: #334155;
+  }
+
+  .thinking-toggle-btn {
+    color: #94a3b8;
+  }
+
+  .thinking-toggle-btn:hover {
+    background: #1e293b;
+    color: #e2e8f0;
+  }
+}

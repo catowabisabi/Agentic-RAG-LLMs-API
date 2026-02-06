@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, 
   Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, 
-  CheckCircle2, RefreshCw, Users, List
+  CheckCircle2, RefreshCw, Users, List, ChevronDown, ChevronRight
 } from 'lucide-react';
 import { chatAPI, sessionAPI, createWebSocket } from '../lib/api';
 
@@ -42,6 +42,7 @@ interface Message {
   agents_involved?: string[];
   sources?: Source[];
   thinking?: ThinkingStep[];
+  thinking_steps?: ThinkingStep[];  // 後端返回的格式 - Modified: 2026-02-06
   task_uid?: string;
 }
 
@@ -123,10 +124,21 @@ const getAgentStateIcon = (state: string) => {
 };
 
 const getStepIcon = (type: string) => {
-  switch (type) {
-    case 'task_assigned': return '📋';
-    case 'THINKING': return '💭';
+  // Support both UnifiedEvent stages and legacy types
+  const normalizedType = type?.toUpperCase() || '';
+  switch (normalizedType) {
+    // UnifiedEvent Stages
+    case 'INIT': return '🚀';
+    case 'CLASSIFYING': return '🏷️';
     case 'PLANNING': return '📝';
+    case 'RETRIEVAL': return '🔍';
+    case 'EXECUTING': return '⚙️';
+    case 'SYNTHESIS': return '✨';
+    case 'COMPLETE': return '✅';
+    case 'FAILED': return '❌';
+    // Legacy types
+    case 'TASK_ASSIGNED': return '📋';
+    case 'THINKING': return '💭';
     case 'RAG_QUERY': return '🔍';
     case 'RAG_RESULT': return '📚';
     case 'LLM_CALL': return '🤖';
@@ -134,6 +146,8 @@ const getStepIcon = (type: string) => {
     case 'COORDINATION': return '🔗';
     case 'RESULT': return '✅';
     case 'ERROR': return '❌';
+    case 'STATUS': return '📡';
+    case 'PROGRESS': return '⏳';
     default: return '▶️';
   }
 };
@@ -159,6 +173,144 @@ const formatThinkingContent = (content: any): string => {
     }
   }
   return '';
+};
+
+// Format detailed content for expanded view
+const formatDetailedContent = (content: any): string => {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  
+  try {
+    // For objects, show formatted JSON
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+};
+
+// Get step color based on stage/type
+const getStepColor = (type: string): string => {
+  const colors: Record<string, string> = {
+    'INIT': '#6b7280',
+    'CLASSIFYING': '#8b5cf6',
+    'PLANNING': '#f59e0b',
+    'RETRIEVAL': '#10b981',
+    'EXECUTING': '#3b82f6',
+    'SYNTHESIS': '#6366f1',
+    'COMPLETE': '#22c55e',
+    'RESULT': '#22c55e',
+    'FAILED': '#ef4444',
+    'ERROR': '#ef4444',
+    'THINKING': '#a855f7',
+    'STATUS': '#6b7280',
+    'PROGRESS': '#3b82f6',
+  };
+  return colors[type?.toUpperCase()] || '#3b82f6';
+};
+
+// Expandable Thinking Step Component - 深色主題 + 時間線 + Lucide 圖標 + 動畫
+// Modified: 2026-02-06 - 合併兩者優點
+interface ExpandableStepProps {
+  step: ThinkingStep;
+  isLast?: boolean;
+  isProcessing?: boolean;
+}
+
+const ExpandableThinkingStep = ({ step, isLast = true, isProcessing = false }: ExpandableStepProps) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const summary = formatThinkingContent(step.content);
+  const hasDetails = step.content && typeof step.content === 'object' && Object.keys(step.content).length > 0;
+  const color = getStepColor(step.step_type);
+  const isAnimating = isLast && isProcessing;
+  
+  if (!summary) return null;
+  
+  return (
+    <div className="flex items-start min-h-[28px]">
+      {/* 時間線 */}
+      <div className="flex flex-col items-center w-5 flex-shrink-0 pt-1.5">
+        <div 
+          className={`w-2 h-2 rounded-full flex-shrink-0 ${isAnimating ? 'animate-pulse' : ''}`}
+          style={{ backgroundColor: color }}
+        />
+        {!isLast && <div className="w-0.5 flex-grow min-h-[12px] bg-gray-600" />}
+      </div>
+
+      {/* 內容 */}
+      <div className="flex-1 pb-2 pl-2 min-w-0">
+        <div 
+          className={`flex items-center gap-1 leading-relaxed ${hasDetails ? 'cursor-pointer hover:bg-purple-800/20 rounded px-1 -mx-1' : ''}`}
+          onClick={() => hasDetails && setIsExpanded(!isExpanded)}
+        >
+          {/* 展開箭頭 */}
+          {hasDetails && (
+            <span className="text-gray-500 flex-shrink-0">
+              {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </span>
+          )}
+          
+          {/* 圖標 */}
+          <span className="flex-shrink-0 text-sm">{getStepIcon(step.step_type)}</span>
+          
+          {/* Agent 名稱 */}
+          <span className="flex-shrink-0 font-medium text-xs whitespace-nowrap" style={{ color }}>
+            {step.agent_name.replace('_agent', '')}
+          </span>
+          
+          {/* 消息 */}
+          <span className={`text-gray-400 text-xs overflow-hidden text-ellipsis ${isExpanded ? '' : 'whitespace-nowrap'}`}>
+            {summary}
+          </span>
+          
+          {/* 處理中動畫 */}
+          {isAnimating && <span className="text-xs flex-shrink-0 animate-spin">⏳</span>}
+        </div>
+        
+        {/* 展開的詳細內容 */}
+        {isExpanded && hasDetails && (
+          <div className="ml-6 mt-1 p-2 bg-gray-800/50 rounded border border-gray-700/50 overflow-x-auto">
+            <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words font-mono">
+              {formatDetailedContent(step.content)}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Message Thinking Steps - Collapsible section for completed messages
+// Modified: 2026-02-06 - 加入時間線
+const MessageThinkingSteps = ({ steps }: { steps: ThinkingStep[] }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  if (!steps || steps.length === 0) return null;
+  
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-600">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-2 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+      >
+        {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <Brain className="w-3 h-3" />
+        <span>處理步驟 ({steps.length})</span>
+      </button>
+      
+      {isExpanded && (
+        <div className="mt-2 p-2 bg-gray-800/50 rounded border border-gray-600/50 max-h-64 overflow-y-auto">
+          {steps.map((step, i) => (
+            <ExpandableThinkingStep 
+              key={i} 
+              step={step} 
+              isLast={i === steps.length - 1}
+              isProcessing={false}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // Helper to summarize agent statuses
@@ -346,19 +498,44 @@ export default function ChatPageV2() {
       return;
     }
     
-    // Capture only important thinking/plan steps (not every status update)
-    if (data.type === 'thinking' || data.type === 'task_assigned' || 
-        data.type === 'task_completed' || data.type === 'agent_step') {
-      const content = formatThinkingContent(data.data || data.content || data);
+    // ========== UnifiedEvent 格式處理 ==========
+    // 支持新的 UnifiedEventManager 格式: type in ['init', 'thinking', 'status', 'progress', 'result', 'error']
+    // 以及舊格式: type in ['thinking', 'task_assigned', 'task_completed', 'agent_step']
+    const unifiedEventTypes = ['init', 'thinking', 'status', 'progress', 'result', 'error', 'stream'];
+    const legacyEventTypes = ['task_assigned', 'task_completed', 'agent_step'];
+    
+    if (unifiedEventTypes.includes(data.type) || legacyEventTypes.includes(data.type)) {
+      // 從 UnifiedEvent 結構提取內容
+      // UnifiedEvent: { content: { message: string, data: {...} }, agent: { name: string }, stage: string }
+      // Legacy: { data: {...}, agent_name: string }
+      let content: string;
+      let agentName: string;
+      let stepType: string;
+      
+      if (data.content?.message) {
+        // UnifiedEvent 格式
+        content = data.content.message;
+        agentName = data.agent?.name || 'system';
+        stepType = `${data.stage?.toUpperCase() || data.type.toUpperCase()}`;
+      } else {
+        // 舊格式
+        content = formatThinkingContent(data.data || data.content || data);
+        agentName = data.agent_name || data.agent || data.source || 'system';
+        stepType = data.type.toUpperCase();
+      }
+      
       // Skip empty or redundant content
       if (!content || content.length < 3) return;
       
+      // Log for debugging
+      console.log('[ChatV2] Processing event:', { type: data.type, stage: data.stage, agent: agentName, content: content.substring(0, 50) });
+      
       const step: ThinkingStep = {
-        step_type: data.type.toUpperCase(),
-        agent_name: data.agent_name || data.agent || data.source || 'system',
-        content: data.data || data.content || data,
+        step_type: stepType,
+        agent_name: agentName,
+        content: data.content?.data || data.data || data.content || { message: content },
         timestamp: data.timestamp || new Date().toISOString(),
-        task_uid: data.task_uid
+        task_uid: data.task_id || data.task_uid
       };
       
       setThinkingSteps(prev => {
@@ -373,7 +550,7 @@ export default function ChatPageV2() {
     }
     
     // Handle task completion - update session state
-    if (data.type === 'task_completed' && data.session_id === activeSessionId && activeSessionId) {
+    if ((data.type === 'task_completed' || data.type === 'result') && data.session_id === activeSessionId && activeSessionId) {
       refreshSessionState(activeSessionId);
     }
   }, [activeSessionId, agentSummary.active]);
@@ -406,7 +583,8 @@ export default function ChatPageV2() {
             timestamp: m.timestamp,
             agents_involved: m.agents_involved,
             sources: m.sources,
-            task_uid: m.task_uid
+            task_uid: m.task_uid,
+            thinking: m.thinking || m.thinking_steps  // Support both field names
           })),
           runningTasks: state.running_tasks || [],
           taskStats: state.task_stats || { total: 0, running: 0, completed: 0, failed: 0 },
@@ -952,6 +1130,11 @@ export default function ChatPageV2() {
                       }`}>
                         <p className="whitespace-pre-wrap">{msg.content}</p>
                         
+                        {/* Expandable Thinking Steps for assistant messages */}
+                        {msg.role === 'assistant' && msg.thinking && msg.thinking.length > 0 && (
+                          <MessageThinkingSteps steps={msg.thinking} />
+                        )}
+                        
                         {msg.sources && msg.sources.length > 0 && (
                           <div className="mt-2 pt-2 border-t border-gray-600">
                             <div className="flex items-center gap-1 text-xs text-gray-400 mb-1">
@@ -1010,21 +1193,21 @@ export default function ChatPageV2() {
                     </div>
                     
                     {/* Live thinking steps - only show if toggle is on */}
+                    {/* Modified: 2026-02-06 - 加入時間線和動畫 */}
                     {showThinking && thinkingSteps.length > 0 && (
-                      <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg max-h-48 overflow-y-auto">
-                        <div className="space-y-1">
-                          {thinkingSteps.slice(-10).map((step, i) => {
-                            const content = formatThinkingContent(step.content);
-                            if (!content) return null;
-                            return (
-                              <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
-                                <span>{getStepIcon(step.step_type)}</span>
-                                <span className="text-purple-400 flex-shrink-0">{step.agent_name.replace('_agent', '')}</span>
-                                <span className="flex-1 truncate">{content}</span>
-                              </div>
-                            );
-                          })}
+                      <div className="ml-4 p-3 bg-purple-900/20 border border-purple-800/50 rounded-lg max-h-64 overflow-y-auto">
+                        <div className="flex items-center gap-2 mb-2 text-xs text-purple-400">
+                          <Brain className="w-3 h-3 animate-pulse" />
+                          <span>處理中... ({thinkingSteps.length} 步驟)</span>
                         </div>
+                        {thinkingSteps.slice(-15).map((step, i, arr) => (
+                          <ExpandableThinkingStep 
+                            key={i} 
+                            step={step} 
+                            isLast={i === arr.length - 1}
+                            isProcessing={true}
+                          />
+                        ))}
                       </div>
                     )}
                   </div>

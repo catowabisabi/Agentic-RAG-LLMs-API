@@ -126,7 +126,7 @@ class IntentRouter:
             logger.error(f"Reload failed: {e}")
             return False
     
-    def match(self, message: str, user_context: str = "") -> IntentMatch:
+    async def match(self, message: str, user_context: str = "") -> IntentMatch:
         """
         Match user message to an intent
         
@@ -153,9 +153,9 @@ class IntentRouter:
         # Step 2: LLM fallback (if enabled)
         if self.llm_fallback_enabled:
             try:
-                return self._llm_classify(message_clean)
+                return await self._llm_classify_async(message)
             except Exception as e:
-                logger.warning(f"LLM classification failed: {e}")
+                logger.warning(f"LLM fallback failed: {e}, using default")
         
         # Step 3: Default
         return IntentMatch(
@@ -166,8 +166,8 @@ class IntentRouter:
             matched_by="default"
         )
     
-    def _llm_classify(self, message: str) -> IntentMatch:
-        """Use LLM to classify intent"""
+    async def _llm_classify_async(self, message: str) -> IntentMatch:
+        """Use LLM to classify intent (async version)"""
         # Build intent descriptions for prompt
         intent_list = "\n".join([
             f"- {name}: {config.get('description', 'No description')}"
@@ -186,10 +186,11 @@ class IntentRouter:
 只回答意圖名稱，不要解釋。如果不確定，回答 "general_query"。
 """
         
-        # Use synchronous generate (intent_router is not async)
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            self.llm_service.generate(prompt=prompt, system_message=system_message, temperature=0)
+        # Use async generate
+        result = await self.llm_service.generate(
+            prompt=prompt, 
+            system_message=system_message, 
+            temperature=0
         )
         intent_name = result.content.strip().lower().replace(" ", "_")
         
@@ -198,6 +199,8 @@ class IntentRouter:
             intent_name = "general_query"
         
         intent_config = self.intents.get(intent_name, {})
+        
+        logger.info(f"LLM classified intent: {intent_name}")
         
         return IntentMatch(
             intent=intent_name,

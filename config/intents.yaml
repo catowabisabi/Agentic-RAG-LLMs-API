@@ -13,13 +13,17 @@ version: "1.0"
 # =============================================================================
 intents:
   # ----- Casual Chat (直接回應) -----
+  # Modified: 2026-02-06 - 修正正則匹配，忽略標點符號
   casual_chat:
     description: "閒聊、問候、簡單社交互動"
     route_to: casual_chat_agent
     patterns:
-      - "^(hi|hello|hey|哈囉|你好|早安|晚安|午安)$"
-      - "^(bye|goodbye|再見|拜拜|掰掰)$"
-      - "^(thanks|thank you|謝謝|多謝|唔該)$"
+      # 問候語（允許結尾有標點）
+      - "^(hi|hello|hey|哈囉|你好|早安|晚安|午安)[!！?.？]*$"
+      # 告別語
+      - "^(bye|goodbye|再見|拜拜|掰掰)[!！?.？]*$"
+      # 感謝語
+      - "^(thanks|thank you|thx|謝謝|多謝|唔該)[!！?.？]*$"
       - "how are you"
       - "你好嗎"
       - "what's up"

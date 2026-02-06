@@ -422,37 +422,58 @@ class MemoryManager:
         session_id: str,
         user_id: str,
         current_query: str,
-        task_category: TaskCategory = None
+        task_category: TaskCategory = None,
+        include_user_preferences: bool = True,   # 用戶偏好/習慣（跨 session）
+        include_cross_session_episodes: bool = False  # 跨 session 的具體問題記憶
     ) -> str:
-        """構建包含記憶的上下文 prompt"""
+        """構建包含記憶的上下文 prompt
+        
+        記憶分離策略：
+        - 用戶偏好/習慣（語言、風格、技能水平）→ 跨 session 保留 ✓
+        - 具體問題/情節（上次問了什麼）→ 僅限當前 session ✗
+        
+        Args:
+            session_id: 當前會話 ID
+            user_id: 用戶 ID
+            current_query: 當前查詢
+            task_category: 任務類別
+            include_user_preferences: 是否包含用戶偏好（默認 True，跨 session）
+            include_cross_session_episodes: 是否包含跨 session 的具體問題（默認 False）
+        
+        Modified: 2026-02-06 - 分離偏好記憶和問題記憶
+        """
         parts = []
         
-        # 工作記憶：最近對話
+        # 工作記憶：最近對話（僅限當前 session）- 永遠包含
         recent = self.get_recent_context(session_id, n_turns=3)
         if recent:
             parts.append("## Recent Conversation")
             parts.append(recent)
         
-        # 情節記憶：類似經驗
-        similar = self.recall_similar_episodes(user_id, current_query, task_category, n_episodes=2)
-        if similar:
-            parts.append("\n## Relevant Past Experiences")
-            for ep in similar:
-                parts.append(f"- Q: {ep.query[:50]}... -> {ep.outcome.value} ({ep.quality_score:.1f})")
+        # 用戶偏好（跨 session 保留）- 這是用戶的習慣，不是具體問題
+        if include_user_preferences:
+            prefs = self.get_preferences(user_id)
+            if prefs:
+                parts.append("\n## User Preferences")
+                for k, v in list(prefs.items())[:5]:
+                    parts.append(f"- {k}: {v}")
         
-        # 用戶偏好
-        prefs = self.get_preferences(user_id)
-        if prefs:
-            parts.append("\n## User Preferences")
-            for k, v in list(prefs.items())[:5]:
-                parts.append(f"- {k}: {v}")
-        
-        # 實體記憶
-        entities = self.get_user_entities(user_id)[:5]
-        if entities:
-            parts.append("\n## Known Entities")
-            for e in entities:
-                parts.append(f"- {e.entity_name} ({e.entity_type})")
+        # 跨 session 的具體問題記憶（默認關閉）
+        # 這些是之前 session 的具體問題，不應混入新 session
+        if include_cross_session_episodes:
+            # 情節記憶：類似經驗
+            similar = self.recall_similar_episodes(user_id, current_query, task_category, n_episodes=2)
+            if similar:
+                parts.append("\n## Relevant Past Experiences")
+                for ep in similar:
+                    parts.append(f"- Q: {ep.query[:50]}... -> {ep.outcome.value} ({ep.quality_score:.1f})")
+            
+            # 實體記憶（這也是具體問題相關的）
+            entities = self.get_user_entities(user_id)[:5]
+            if entities:
+                parts.append("\n## Known Entities")
+                for e in entities:
+                    parts.append(f"- {e.entity_name} ({e.entity_type})")
         
         return "\n".join(parts)
 

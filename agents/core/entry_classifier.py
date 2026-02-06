@@ -68,8 +68,8 @@ class EntryClassifier(BaseAgent):
         Returns:
             EntryClassification with routing info
         """
-        # Use the intent router
-        match: IntentMatch = self.router.match(message, context)
+        # Use the intent router (now async to support LLM fallback)
+        match: IntentMatch = await self.router.match(message, context)
         
         # Determine if it's casual
         is_casual = match.route_to == "casual_chat_agent"

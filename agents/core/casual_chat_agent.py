@@ -103,8 +103,9 @@ User: "What can you do?"
     async def _check_capabilities(self, query: str) -> CapabilityCheck:
         """
         Ask the Classifier Agent if this query fits the 'Casual Agent' persona.
+        Uses LLM to make the decision.
         """
-        # Use the centralized Classifier Agent
+        # Use the centralized Classifier Agent (LLM-powered)
         from agents.auxiliary.classifier_agent import ClassifierAgent
         
         classifier = ClassifierAgent()

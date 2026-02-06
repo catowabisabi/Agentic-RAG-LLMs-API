@@ -568,9 +568,9 @@ Format: category|reason"""
                 history_context = "Previous conversation:\n" + "\n".join(history_parts) + "\n\n"
         
         # Direct LLM call for general knowledge
+        # Modified: 2026-02-06 - 移除 user_context（可能包含跨 session 的 RAG 內容）
         prompt = f"""You are a helpful AI assistant. Answer this question clearly and informatively.
 
-{f'User Context: {user_context}' if user_context else ''}
 {history_context}
 Question: {query}
 
@@ -578,7 +578,7 @@ Guidelines:
 - Provide a clear, accurate answer
 - Match the language of the question (if asked in Chinese, respond in Chinese)
 - Be concise but informative
-- If it's a technical term or concept, provide a brief explanation"""
+- If it's a greeting (like "Hello"), just respond naturally with a greeting"""
         
         llm_result = await self.llm_service.generate(prompt=prompt)
         response_text = llm_result.content if hasattr(llm_result, 'content') else str(llm_result)
@@ -756,8 +756,15 @@ Guidelines:
             memory_manager = get_memory_manager()
             
             # Get conversation context
+            # 用戶偏好跨 session 保留，但具體問題不跨 session
+            # Modified: 2026-02-06 - 記憶分離
             memory_context = memory_manager.build_context_prompt(
-                session_id, user_id, query, TaskCategory.RAG_SEARCH
+                session_id=session_id,
+                user_id=user_id,
+                current_query=query,
+                task_category=TaskCategory.RAG_SEARCH,
+                include_user_preferences=True,          # 用戶偏好跨 session
+                include_cross_session_episodes=False    # 具體問題不跨 session
             )
         except Exception as e:
             logger.warning(f"Memory integration failed: {e}")

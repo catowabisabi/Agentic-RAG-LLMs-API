@@ -137,10 +137,30 @@ class ChatService:
         self,
         conversation_id: str,
         message: str,
-        task_uid: Optional[str] = None
+        task_uid: Optional[str] = None,
+        agents_involved: List[str] = None,
+        sources: List[Dict] = None
     ) -> str:
         """添加助手消息到歷史"""
         message_id = str(uuid.uuid4())
+        
+        # 從 SessionDB 獲取此任務的處理步驟
+        thinking_steps = None
+        if task_uid:
+            try:
+                steps = session_db.get_task_steps(task_uid)
+                if steps:
+                    thinking_steps = [
+                        {
+                            "step_type": s.get("step_type"),
+                            "agent_name": s.get("agent_name"),
+                            "content": s.get("content"),
+                            "timestamp": s.get("timestamp")
+                        }
+                        for s in steps
+                    ]
+            except Exception as e:
+                logger.warning(f"Failed to get task steps: {e}")
         
         # 添加到內存
         self.conversations[conversation_id].append({
@@ -150,12 +170,15 @@ class ChatService:
             "timestamp": datetime.now().isoformat()
         })
         
-        # 添加到數據庫
+        # 添加到數據庫（包含 thinking_steps）
         session_db.add_message(
             session_id=conversation_id,
             role="assistant",
             content=message,
-            task_uid=task_uid
+            task_uid=task_uid,
+            agents_involved=agents_involved,
+            sources=sources,
+            thinking_steps=thinking_steps
         )
         
         return message_id
@@ -374,14 +397,13 @@ class ChatService:
             entry_classifier = get_entry_classifier()
             classification = await entry_classifier.classify(message, user_context)
             
-            # 強制 RAG 覆蓋
-            if use_rag:
-                logger.info(f"[Entry] Override: use_rag=True. Forcing manager_agent.")
-                classification.is_casual = False
+            # 只有當 entry_classifier 判定為非 casual，且 use_rag=True 時，才強制走 RAG
+            # 不要覆蓋 casual chat 的判定！
+            if use_rag and not classification.is_casual:
+                logger.info(f"[Entry] use_rag=True and not casual. Will use RAG for manager_agent.")
                 classification.route_to = "manager_agent"
-                classification.intent = "search_knowledge"
-                classification.reason = "Forced RAG execution"
-                classification.confidence = 1.0
+                classification.intent = classification.intent or "search_knowledge"
+                # 不改變 reason，保留原始分類理由
             
             logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
             
@@ -430,8 +452,14 @@ class ChatService:
                     stream_callback=stream_callback
                 )
             
-            # 添加助手消息
-            self.add_assistant_message(conversation_id, response_text, task_uid)
+            # 添加助手消息（包含處理步驟）
+            self.add_assistant_message(
+                conversation_id=conversation_id,
+                message=response_text,
+                task_uid=task_uid,
+                agents_involved=agents_involved,
+                sources=sources
+            )
             
             # 更新任務狀態為完成
             session_db.update_task_status(task_uid, DBTaskStatus.COMPLETED)
