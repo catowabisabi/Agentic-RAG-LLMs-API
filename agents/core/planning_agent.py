@@ -462,12 +462,13 @@ Respond in JSON format:
                     "todos": plan_data.get("todos", [])
                 }
             else:
-                # Fallback to simple plan
-                return self._create_fallback_plan(query, user_context)
+                # [NO FALLBACK] Plan creation must succeed - errors propagate for testing
+                raise ValueError(f"LLM did not return valid plan data for query: {query[:50]}...")
                 
-        except Exception as e:
-            logger.error(f"Error creating plan: {e}")
-            return self._create_fallback_plan(query, user_context)
+        # [NO FALLBACK] Errors propagate for testing visibility
+        # except Exception as e:
+        #     logger.error(f"Error creating plan: {e}")
+        #     return self._create_fallback_plan(query, user_context)
     
     def _create_fallback_plan(self, query: str, user_context: str = "") -> Dict[str, Any]:
         """Create a simple fallback plan"""
@@ -824,15 +825,13 @@ Available Agents:
 
 Create a corrected plan."""
         
-        try:
-            refined = await self.llm_service.generate_with_structured_output(
-                prompt_key="planning_agent",
-                output_schema=ExecutionPlan,
-                user_input=refine_prompt
-            )
-            return refined
-        except:
-            return plan  # Return original if refinement fails
+        # [NO FALLBACK] Refinement - errors propagate for testing
+        refined = await self.llm_service.generate_with_structured_output(
+            prompt_key="planning_agent",
+            output_schema=ExecutionPlan,
+            user_input=refine_prompt
+        )
+        return refined
     
     async def _send_plan_to_manager(
         self, 

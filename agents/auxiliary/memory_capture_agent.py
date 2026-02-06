@@ -87,8 +87,10 @@ class MemoryCaptureAgent(BaseAgent):
         response = task.input_data.get("response", "")
         user_id = task.input_data.get("user_id", "default")
         
-        if not message:
-            return {"should_remember": False, "reason": "Empty message"}
+        # [NO EARLY RETURN] Empty message should still be analyzed by LLM
+        # LLM will decide if it's worth remembering
+        # if not message:
+        #     return {"should_remember": False, "reason": "Empty message"}
         
         # First, quick heuristic check
         should_capture, memory_type, reason = self.cerebro.should_capture(message, response)

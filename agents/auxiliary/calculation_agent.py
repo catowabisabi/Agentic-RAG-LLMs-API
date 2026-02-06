@@ -303,13 +303,8 @@ Provide only the numerical answer."""
                 session_id=self.agent_name
             )
             
-            try:
-                result = float(response_text.strip())
-            except:
-                return {
-                    "success": False,
-                    "error": f"Could not convert {from_unit} to {to_unit}"
-                }
+            # [NO FALLBACK] Parse result - errors propagate for testing
+            result = float(response_text.strip())
         
         return {
             "success": True,

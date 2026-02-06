@@ -136,17 +136,13 @@ class ValidationAgent(BaseAgent):
             })
             
             return result
-            
-        except Exception as e:
-            logger.error(f"Error in validation: {e}")
-            return {
-                "is_valid": True,  # Default to valid on error
-                "confidence": 0.3,
-                "errors": [f"Validation error: {e}"],
-                "warnings": [],
-                "suggestions": [],
-                "should_retry": False
-            }
+        # [NO FALLBACK] Errors propagate for testing visibility
+        # except Exception as e:
+        #     logger.error(f"Error in validation: {e}")
+        #     return {
+        #         "is_valid": True,  # Default to valid on error
+        #         ...
+        #     }
     
     async def _validate_data(self, task: TaskAssignment) -> Dict[str, Any]:
         """Validate structured data"""

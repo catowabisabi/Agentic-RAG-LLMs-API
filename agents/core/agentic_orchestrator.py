@@ -609,31 +609,12 @@ Always cite sources when using specific information from the retrieved content."
                 )
             
             else:
-                # 默認使用 single_rag
-                result = await self.execute_single_rag(query, chat_history)
-                return OrchestratorResult(
-                    response=result["response"],
-                    strategy_used=AgentStrategy.SINGLE_RAG,
-                    confidence=0.5,
-                    sources=result.get("sources", []),
-                    reasoning_trace="Default fallback to single RAG",
-                    verification_passed=True,
-                    iterations=1,
-                    metacognitive_analysis=analysis
-                )
-                
-        except Exception as e:
-            logger.error(f"[Orchestrator] Execution error: {e}")
-            return OrchestratorResult(
-                response=f"I apologize, but I encountered an error while processing your request: {str(e)}",
-                strategy_used=AgentStrategy.SINGLE_RAG,
-                confidence=0.2,
-                sources=[],
-                reasoning_trace=f"Error: {e}",
-                verification_passed=False,
-                iterations=1,
-                metacognitive_analysis=analysis
-            )
+                # [NO FALLBACK] Strategy selection must be explicit
+                # If no strategy is determined, raise error for visibility
+                raise ValueError(f"No valid strategy selected by Metacognition for query: {query[:50]}...")
+        # [NO FALLBACK] Errors propagate for testing visibility
+        # except Exception as e:
+        #     ...
 
 
 # 單例

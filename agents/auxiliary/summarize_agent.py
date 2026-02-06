@@ -101,30 +101,17 @@ Respond in JSON format with fields: title, summary, key_points, word_count"""
             )
             
             import json
+            # [NO FALLBACK] JSON parsing - errors propagate for testing
             result_data = json.loads(result_text)
             
             return {
                 "success": True,
                 "summary": result_data
             }
-        except Exception as e:
-            # Fallback to unstructured
-            result_text = await self.llm_service.generate(
-                prompt=prompt.replace("Respond in JSON format with fields: title, summary, key_points, word_count", ""),
-                system_message=self.prompt_template.system_prompt,
-                temperature=self.prompt_template.temperature,
-                session_id=task.task_id
-            )
-            
-            return {
-                "success": True,
-                "summary": {
-                    "title": "Summary",
-                    "summary": result_text,
-                    "key_points": [],
-                    "word_count": len(result_text.split())
-                }
-            }
+        # [REMOVED] Fallback to unstructured - errors must propagate
+        # except Exception as e:
+        #     result_text = await self.llm_service.generate(...)
+        #     return {...}
     
     async def _extract_key_points(self, task: TaskAssignment) -> Dict[str, Any]:
         """Extract key points from content"""

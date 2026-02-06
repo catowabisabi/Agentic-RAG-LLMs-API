@@ -174,11 +174,9 @@ Return a JSON object with the extracted fields."""
             response_format={"type": "json_object"}
         )
         
-        # Try to parse as JSON
-        try:
-            extracted = json.loads(result_text)
-        except:
-            extracted = {"raw_extraction": result_text}
+        # [NO FALLBACK] Parse JSON - errors propagate for testing
+        # If LLM didn't return valid JSON, this should fail visibly
+        extracted = json.loads(result_text)
         
         return {
             "success": True,

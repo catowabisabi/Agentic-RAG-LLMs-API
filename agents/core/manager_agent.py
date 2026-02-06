@@ -199,17 +199,16 @@ class ManagerAgent(BaseAgent):
         
         Returns:
             QueryClassification with query_type: casual_chat, simple_rag, or complex_planning
-        """
-        # Fast path: check for obvious casual messages using heuristics
-        from agents.core.casual_chat_agent import CasualChatAgent
-        if CasualChatAgent.is_casual_message(query):
-            return QueryClassification(
-                query_type="casual_chat",
-                reasoning="Message matches casual conversation pattern",
-                confidence=0.95
-            )
         
-        # Use LLM for classification
+        NOTE: All classification is done by LLM. No fast paths or heuristics.
+        """
+        # [REMOVED] Fast path using is_casual_message heuristics
+        # All classification MUST go through LLM for consistent decision making
+        # from agents.core.casual_chat_agent import CasualChatAgent
+        # if CasualChatAgent.is_casual_message(query):
+        #     return QueryClassification(...)
+        
+        # Use LLM for classification (the ONLY decision maker)
         classification_prompt = f"""You are a query router. Classify this user query into ONE category:
 
 1. casual_chat: Greetings, small talk, thanks, farewells, questions about AI capabilities
@@ -252,24 +251,22 @@ Format: category|reason"""
             # Validate query_type
             valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "complex_planning"]
             if query_type not in valid_types:
-                # Fallback: if it looks like a question, try general_knowledge
-                if "?" in query or query_type == "simple_rag":
-                    query_type = "general_knowledge"
-                else:
-                    query_type = "general_knowledge"  # Default fallback
+                # [NO FALLBACK] LLM must return valid type - raise error for visibility
+                raise ValueError(f"LLM returned invalid query type: {query_type}. Valid types: {valid_types}")
                 
             return QueryClassification(
                 query_type=query_type,
                 reasoning=reasoning,
                 confidence=0.85
             )
-        except Exception as e:
-            logger.warning(f"[Manager] Classification failed: {e}, defaulting to simple_rag")
-            return QueryClassification(
-                query_type="simple_rag",
-                reasoning=f"Classification error, using default: {e}",
-                confidence=0.5
-            )
+        # [NO FALLBACK] Errors propagate for testing visibility
+        # except Exception as e:
+        #     logger.warning(f"[Manager] Classification failed: {e}, defaulting to simple_rag")
+        #     return QueryClassification(
+        #         query_type="simple_rag",
+        #         reasoning=f"Classification error, using default: {e}",
+        #         confidence=0.5
+        #     )
     
     async def _handle_knowledge_inventory(self, task: TaskAssignment) -> Dict[str, Any]:
         """
@@ -531,8 +528,8 @@ Format: category|reason"""
         elif classification.query_type == "complex_planning":
             return await self._handle_complex_query(task)
         else:
-            # Fallback to general knowledge
-            return await self._handle_general_knowledge(task)
+            # [NO FALLBACK] This should never happen if LLM is working correctly
+            raise ValueError(f"Invalid query type from classification: {classification.query_type}")
     
     async def _handle_general_knowledge(self, task: TaskAssignment) -> Dict[str, Any]:
         """
@@ -849,59 +846,12 @@ Guidelines:
                 reasoning_trace = result.reasoning_trace
                 
                 logger.info(f"[Manager] ReAct completed in {result.total_iterations} iterations")
-                
-            except Exception as e:
-                logger.error(f"ReAct loop failed: {e}, falling back to simple RAG")
-                use_react = False
         
-        if not use_react:
-            # ============== Simple RAG Fallback ==============
-            agents_involved.append("rag_agent")
-            
-            await self.ws_manager.broadcast_agent_activity({
-                "type": "task_assigned",
-                "agent": "rag_agent",
-                "source": self.agent_name,
-                "target": "rag_agent",
-                "content": {"task": "retrieve_context", "query": query[:100]},
-                "timestamp": datetime.now().isoformat(),
-                "priority": 1
-            })
-            
-            rag_agent = self.registry.get_agent("rag_agent")
-            rag_context = ""
-            
-            if rag_agent:
-                rag_task = TaskAssignment(
-                    task_id=task_id,
-                    task_type="query_knowledge",
-                    description=query,
-                    input_data={"query": query}
-                )
-                rag_result = await rag_agent.process_task(rag_task)
-                
-                if isinstance(rag_result, dict):
-                    rag_context = rag_result.get("context", "")
-                    sources = rag_result.get("sources", [])
-            
-            # Generate response
-            if rag_context and len(rag_context) > 100:
-                prompt = f"""Based on the following knowledge base context, answer the user's question.
-Be concise and direct.
-
-{memory_context}
-
-=== Knowledge Base Context ===
-{rag_context[:4000]}
-=== End Context ===
-
-User Question: {query}
-
-Answer:"""
-                result = await self.llm_service.generate(prompt=prompt)
-                response_text = result.content if hasattr(result, 'content') else str(result)
-            else:
-                response_text = "I searched the knowledge bases but couldn't find specific information about that topic."
+        # [NO FALLBACK] ReAct loop is the ONLY path - no simple RAG fallback
+        # If ReAct fails, the error should propagate for visibility
+        # 
+        # [REMOVED] The entire "if not use_react:" fallback block has been removed
+        # All RAG queries now go through ReAct loop for consistent behavior
         
         # ============== Metacognition: Self-Evaluation ==============
         quality_score = 0.7
@@ -1292,30 +1242,9 @@ Answer:"""
             else:
                 response_text = str(thinking_result)
         else:
-            # Fallback: use LLM directly
-            if HAS_EVENT_BUS and event_bus:
-                await event_bus.emit(
-                    EventType.LLM_CALL_START,
-                    self.agent_name,
-                    {"model": self.config.DEFAULT_MODEL, "query_length": len(query)},
-                    task_id=task_id
-                )
-            
-            if rag_context:
-                prompt = f"""You are a helpful AI assistant with access to a knowledge base.
-
-=== Knowledge Base Context ===
-{rag_context}
-=== End Context ===
-
-User: {query}
-
-Provide a helpful, accurate, and informative response based on the available context."""
-                result = await self.llm_service.generate(prompt=prompt)
-            else:
-                result = await self.llm_service.generate(prompt=query)
-            
-            response_text = result.content if hasattr(result, 'content') else str(result)
+            # [NO FALLBACK] ThinkingAgent is required for general knowledge
+            # If thinking_agent is not available, error should propagate
+            raise RuntimeError("ThinkingAgent is required for general knowledge queries but was not available")
             
             if HAS_EVENT_BUS and event_bus:
                 await event_bus.emit(

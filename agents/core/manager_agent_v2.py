@@ -117,7 +117,8 @@ class ManagerAgentV2(BaseAgent):
             logger.info("[Manager] Agentic Orchestrator enabled")
         else:
             self.orchestrator = None
-            logger.warning("[Manager] Agentic Orchestrator not available, using fallback")
+            # [NO FALLBACK] Orchestrator is required in V2 architecture
+            logger.error("[Manager] CRITICAL: Agentic Orchestrator not available - V2 architecture requires it")
         
         # Initialize Metacognition
         if HAS_METACOGNITION:
@@ -203,17 +204,19 @@ class ManagerAgentV2(BaseAgent):
         })
         
         try:
-            # 優先使用 Agentic Orchestrator
-            if self.orchestrator:
-                result = await self._process_with_orchestrator(
-                    query=query,
-                    chat_history=chat_history,
-                    user_context=user_context,
-                    task_id=task_id
-                )
-            else:
-                # Fallback to planning-driven mode
-                result = await self._process_with_planning(task)
+            # [NO FALLBACK] 必須使用 Agentic Orchestrator
+            if not self.orchestrator:
+                raise RuntimeError("Agentic Orchestrator is required but not available. Cannot proceed without it.")
+            
+            result = await self._process_with_orchestrator(
+                query=query,
+                chat_history=chat_history,
+                user_context=user_context,
+                task_id=task_id
+            )
+            # [REMOVED] Fallback to planning-driven mode
+            # else:
+            #     result = await self._process_with_planning(task)
             
             # Metacognition: 反思結果
             if self.metacognition and isinstance(result, dict) and result.get("response"):
@@ -236,16 +239,11 @@ class ManagerAgentV2(BaseAgent):
             })
             
             return result
-            
-        except Exception as e:
-            logger.error(f"[Manager] Task failed: {e}")
-            await self._broadcast_status("failed", task_id, {"error": str(e)})
-            return {
-                "response": f"抱歉，處理您的請求時發生錯誤：{str(e)}",
-                "error": str(e),
-                "agents_involved": ["manager_agent"],
-                "strategy_used": "error_fallback"
-            }
+        # [NO FALLBACK] Errors propagate for testing visibility
+        # except Exception as e:
+        #     logger.error(f"[Manager] Task failed: {e}")
+        #     await self._broadcast_status("failed", task_id, {"error": str(e)})
+        #     return {...}
     
     async def _process_with_orchestrator(
         self,

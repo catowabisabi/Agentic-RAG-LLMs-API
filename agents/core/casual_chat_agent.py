@@ -164,8 +164,8 @@ User: "What can you do?"
         logger.info(f"[CasualChat] Processing: {message[:50]}... (history: {len(chat_history)} entries)")
 
         # --- STEP 1: Capability Check ---
-        # Only check if it's not obviously trivial (heuristic fallback or override can go here)
-        # For now, we trust the LLM check.
+        # ALL decisions are made by LLM - no heuristics or pattern matching
+        # This ensures consistent, intelligent classification
         capability = await self._check_capabilities(message)
         
         if not capability.can_handle:
@@ -266,84 +266,32 @@ User: "What can you do?"
     @staticmethod
     def is_casual_message(message: str) -> bool:
         """
-        Quick heuristic check if a message is likely casual.
-        Used for fast-path routing before LLM classification.
+        [DEPRECATED] This method has been disabled to enforce LLM-only decision making.
+        
+        In Agentic Architecture V2, ALL classification decisions MUST be made by LLM.
+        Pattern matching is removed to ensure consistent, intelligent decision making.
         
         Args:
             message: The user's message
             
         Returns:
-            True if message appears to be casual chat
+            Always returns False to force LLM classification
         """
-        message_lower = message.lower().strip()
+        # [REMOVED] All pattern matching logic
+        # LLM is the ONLY decision maker in Agentic Architecture V2
+        # 
+        # The original patterns have been commented out for reference,
+        # but they should NEVER be used for routing decisions.
+        #
+        # casual_patterns = [
+        #     "hello", "hi", "hey", ...
+        # ]
+        #
+        # for pattern in casual_patterns:
+        #     if message_lower == pattern ...:
+        #         return True
         
-        # Common casual patterns (English + Chinese/Cantonese)
-        casual_patterns = [
-            # === English ===
-            # Greetings
-            "hello", "hi", "hey", "hi there", "hello there", "howdy",
-            "good morning", "good afternoon", "good evening", "good night",
-            "what's up", "whats up", "sup", "yo",
-            # Farewells
-            "bye", "goodbye", "see you", "see ya", "later", "take care",
-            "good bye", "farewell",
-            # Thanks
-            "thanks", "thank you", "thx", "ty", "appreciated",
-            # Simple questions about the bot
-            "who are you", "what are you", "what's your name", "whats your name",
-            "are you a bot", "are you ai", "are you human",
-            "what can you do", "what do you do", "how can you help",
-            "what are your capabilities", "what features", "your features",
-            # Affirmations
-            "ok", "okay", "got it", "understood", "sure", "yes", "no",
-            "alright", "fine", "cool", "great", "nice", "awesome",
-            # Pleasantries
-            "how are you", "how's it going", "how do you do",
-            "nice to meet you", "pleased to meet you",
-            # Apologies
-            "sorry", "my bad", "excuse me", "pardon",
-            
-            # === 中文 (Mandarin) ===
-            # 問候
-            "你好", "您好", "嗨", "哈囉", "哈喽", "早安", "午安", "晚安",
-            "早上好", "下午好", "晚上好",
-            # 告別
-            "再見", "再见", "拜拜", "掰掰", "晚安", "保重",
-            # 感謝
-            "謝謝", "谢谢", "感謝", "感谢", "多謝", "多谢", "3q", "thx",
-            # 關於 AI 的問題
-            "你是誰", "你是谁", "你叫什麼", "你叫什么", "你的名字",
-            "你是機器人", "你是机器人", "你是ai", "你是人工智慧", "你是人工智能",
-            "你有什麼功能", "你有什么功能", "你能做什麼", "你能做什么",
-            "你會什麼", "你会什么", "你可以做什麼", "你可以做什么",
-            "你的功能", "有什麼功能", "有什么功能", "能做啥", "會做啥", "会做啥",
-            # 確認
-            "好", "好的", "了解", "知道了", "明白", "收到", "ok", "嗯",
-            "是", "不是", "對", "对", "沒問題", "没问题",
-            # 問候語
-            "你好嗎", "你好吗", "最近怎樣", "最近怎样", "吃了嗎", "吃了吗",
-            # 道歉
-            "對不起", "对不起", "抱歉", "不好意思", "sorry",
-            
-            # === 粵語 (Cantonese) ===
-            "你有咩功能", "你有乜功能", "你識咩", "你识乜", "你識做咩", "你识做乜",
-            "你會咩", "你会乜", "你可以做咩", "你可以做乜", "做到咩", "做到乜",
-            "有咩功能", "有乜功能", "咩功能", "乜功能",
-            "你係邊個", "你系边个", "你叫咩名", "你叫乜名",
-            "你係ai", "你系ai", "你係機械人", "你系机械人",
-            "多謝", "唔該", "唔该", "拜拜", "早晨", "早抖",
-            "點呀", "点呀", "點樣", "点样", "幾好", "几好",
-        ]
-        
-        # Check if message matches or starts with casual pattern
-        for pattern in casual_patterns:
-            if message_lower == pattern or message_lower.startswith(pattern + " ") or message_lower.startswith(pattern + "!") or message_lower.startswith(pattern + "?") or message_lower.startswith(pattern + ",") or message_lower.startswith(pattern + "."):
-                return True
-        
-        # NOTE: Removed length-based heuristic as it causes false positives for short queries 
-        # (especially in non-English languages or specific technical terms like "rag status")
-        
-        return False
+        return False  # Always return False to force LLM classification
 
 
 # Singleton instance
