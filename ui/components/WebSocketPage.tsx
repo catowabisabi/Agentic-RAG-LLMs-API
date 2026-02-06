@@ -149,6 +149,17 @@ export default function WebSocketPage() {
     scrollToBottom();
   }, [messages]);
 
+  // Clean up WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        if ((wsRef.current as any)?.pingInterval) clearInterval((wsRef.current as any).pingInterval);
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
+
   const addMessage = (type: WSMessage['type'], content: string, parsed?: any) => {
     setMessages((prev) => [
       ...prev,
