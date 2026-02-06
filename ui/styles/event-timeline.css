@@ -1,5 +1,5 @@
 /**
- * Event Timeline Styles
+ * Event Timeline - VS Code Dark Theme
  */
 
 .event-timeline {
@@ -7,6 +7,7 @@
   flex-direction: column;
   gap: 1rem;
   padding: 1rem;
+  background: #1e1e1e;
 }
 
 /* 當前階段指示器 */
@@ -15,11 +16,13 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
-  border-radius: 9999px;
-  color: white;
+  border-radius: 4px;
+  background: #007acc;
+  color: #ffffff;
   font-weight: 500;
-  font-size: 0.875rem;
+  font-size: 13px;
   width: fit-content;
+  border: 1px solid #005a9e;
 }
 
 /* 時間線容器 */
@@ -27,6 +30,9 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  background: #252526;
+  border-radius: 4px;
+  padding: 8px;
 }
 
 /* 時間線項目 */
@@ -35,18 +41,25 @@
   align-items: flex-start;
   gap: 1rem;
   padding: 0.75rem 0;
-  border-left: 3px solid #e5e7eb;
+  border-left: 2px solid #3e3e42;
   padding-left: 1rem;
   margin-left: 0.75rem;
   position: relative;
+  color: #cccccc;
 }
 
 .timeline-item.latest {
-  border-left-style: dashed;
+  border-left-color: #007acc;
+  border-left-style: solid;
 }
 
 .timeline-item.thinking {
   animation: fadeIn 0.3s ease-in-out;
+  background: rgba(0, 122, 204, 0.05);
+  margin: 0 -8px;
+  padding-left: calc(1rem + 8px);
+  padding-right: 8px;
+  border-radius: 4px;
 }
 
 /* 時間線圖標 */

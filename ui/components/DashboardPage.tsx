@@ -77,6 +77,14 @@ export default function DashboardPage() {
         ws.onopen = () => {
           console.log('[Dashboard] WebSocket connected');
           setWsConnected(true);
+          // Start heartbeat
+          const pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            }
+          }, 30000);
+          
+          ws.addEventListener('close', () => clearInterval(pingInterval));
         };
 
         ws.onmessage = (event) => {

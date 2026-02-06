@@ -387,6 +387,14 @@ export default function ChatPageV2() {
         ws.onopen = () => {
           console.log('[ChatV2] WebSocket connected');
           setWsConnected(true);
+
+          // Heartbeat - Keep connection alive
+           const pingInterval = setInterval(() => {
+             if (ws.readyState === WebSocket.OPEN) {
+               ws.send(JSON.stringify({ type: 'ping' }));
+             }
+           }, 30000);
+           ws.addEventListener('close', () => clearInterval(pingInterval));
           
           // Re-subscribe to active session if we have one
           if (activeSessionId) {
