@@ -53,6 +53,14 @@ from .vectordb_manager import VectorDBManager, vectordb_manager
 from .event_bus import event_bus, EventType, AgentState
 from .session_db import session_db, TaskStatus as DBTaskStatus, StepType
 from .task_manager import task_manager, TaskStatus, TaskResult
+from .unified_event_manager import (
+    UnifiedEventManager, 
+    get_event_manager, 
+    init_event_manager,
+    EventType as UEventType,
+    Stage,
+    UnifiedEvent
+)
 
 __all__ = [
     # VectorDB
@@ -72,5 +80,13 @@ __all__ = [
     # Task Manager
     'task_manager',
     'TaskStatus',
-    'TaskResult'
+    'TaskResult',
+    
+    # Unified Event Manager
+    'UnifiedEventManager',
+    'get_event_manager',
+    'init_event_manager',
+    'UEventType',
+    'Stage',
+    'UnifiedEvent'
 ]

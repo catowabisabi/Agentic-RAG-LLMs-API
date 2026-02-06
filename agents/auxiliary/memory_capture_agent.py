@@ -141,11 +141,10 @@ If nothing worth remembering, respond:
         
         try:
             result = await self.llm_service.generate(
-                prompt_key="memory_capture_agent",
-                user_input=prompt,
+                prompt=prompt,
                 temperature=0.3
             )
-            content = result.get("content", "")
+            content = result.content if hasattr(result, 'content') else str(result)
             
             # Parse JSON from response
             import json

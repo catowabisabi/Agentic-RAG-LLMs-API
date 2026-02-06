@@ -8,6 +8,7 @@ The central coordinator agent that:
 - Handles escalation from other agents
 
 Integrated with EventBus for real-time status broadcasting.
+Uses UnifiedEventManager for consistent event handling.
 """
 
 import asyncio
@@ -36,6 +37,13 @@ try:
 except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
+
+# Import UnifiedEventManager
+try:
+    from services.unified_event_manager import get_event_manager, EventType as UEventType, Stage
+    HAS_UNIFIED_EVENTS = True
+except ImportError:
+    HAS_UNIFIED_EVENTS = False
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +124,34 @@ class ManagerAgent(BaseAgent):
         self._message_handlers[MessageType.AGENT_COMPLETED] = self._handle_agent_completed
         self._message_handlers[MessageType.QUERY] = self._handle_query
         
+        # 統一事件管理器
+        self._event_manager = get_event_manager() if HAS_UNIFIED_EVENTS else None
+        
         logger.info("ManagerAgent initialized")
+    
+    async def _broadcast_thinking(self, session_id: str, content: Dict[str, Any], task_id: str = None):
+        """Helper to broadcast thinking steps using UnifiedEventManager"""
+        message = content.get("status", content.get("message", "Thinking..."))
+        
+        # 優先使用統一事件管理器
+        if self._event_manager and session_id:
+            await self._event_manager.emit_thinking(
+                session_id=session_id,
+                task_id=task_id or "unknown",
+                agent_name=self.agent_name,
+                message=message,
+                data=content
+            )
+        else:
+            # Fallback to legacy broadcast
+            await self.ws_manager.broadcast_agent_activity({
+                "type": "thinking",
+                "agent": self.agent_name,
+                "session_id": session_id,
+                "task_id": task_id,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            })
     
     async def start(self):
         """Start the manager agent"""
@@ -405,13 +440,14 @@ Format: category|reason"""
         query = task.input_data.get("query", task.description)
         use_rag = task.input_data.get("use_rag", True)
         task_id = task.task_id
+        session_id = task.input_data.get("session_id") or task.input_data.get("conversation_id")
         
         # Check for intent/handler from EntryClassifier (config-driven routing)
         intent = task.input_data.get("intent")
         handler = task.input_data.get("handler")
         matched_by = task.input_data.get("matched_by", "internal")
         
-        logger.info(f"[Manager] Received intent={intent}, handler={handler}, matched_by={matched_by}")
+        logger.info(f"[Manager] Received intent={intent}, handler={handler}, matched_by={matched_by}, session_id={session_id}")
         
         # If handler is provided, use handler-based routing (fast path)
         if handler:
@@ -426,17 +462,10 @@ Format: category|reason"""
                     message=f"Executing handler: {handler}"
                 )
             
-            await self.ws_manager.broadcast_agent_activity({
-                "type": "thinking",
-                "agent": self.agent_name,
-                "source": self.agent_name,
-                "content": {
-                    "status": f"Intent: {intent}, Handler: {handler}",
-                    "matched_by": matched_by
-                },
-                "timestamp": datetime.now().isoformat(),
-                "priority": 1
-            })
+            await self._broadcast_thinking(session_id, {
+                "status": f"Intent: {intent}, Handler: {handler}",
+                "matched_by": matched_by
+            }, task_id)
             
             # Handler dispatch - map handler names from intents.yaml to methods
             handler_map = {
@@ -479,17 +508,10 @@ Format: category|reason"""
         classification = await self._classify_query(query, task_id)
         logger.info(f"[Manager] Query classified as: {classification.query_type} ({classification.reasoning})")
         
-        await self.ws_manager.broadcast_agent_activity({
-            "type": "thinking",
-            "agent": self.agent_name,
-            "source": self.agent_name,
-            "content": {
-                "status": f"Query type: {classification.query_type}",
-                "reasoning": classification.reasoning
-            },
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
-        })
+        await self._broadcast_thinking(session_id, {
+            "status": f"Query type: {classification.query_type}",
+            "reasoning": classification.reasoning
+        }, task_id)
         
         # Step 2: Route based on classification
         if classification.query_type == "casual_chat":
@@ -521,20 +543,17 @@ Format: category|reason"""
         task_id = task.task_id
         chat_history = task.input_data.get("chat_history", [])
         user_context = task.input_data.get("user_context", "")
+        session_id = task.input_data.get("session_id") or task.input_data.get("conversation_id")
         
         logger.info(f"[Manager] General knowledge query - direct LLM answer")
         
         agents_involved = ["manager_agent"]
         
-        await self.ws_manager.broadcast_agent_activity({
-            "type": "task_assigned",
-            "agent": "manager_agent",
-            "source": self.agent_name,
-            "target": "llm",
-            "content": {"task": "general_knowledge", "query": query[:100]},
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
-        })
+        await self._broadcast_thinking(session_id, {
+            "status": "Processing general knowledge query...",
+            "task": "general_knowledge",
+            "query": query[:100]
+        }, task_id)
         
         # Build chat history context
         history_context = ""
@@ -567,11 +586,10 @@ Guidelines:
         await self.ws_manager.broadcast_agent_activity({
             "type": "task_completed",
             "agent": "manager_agent",
-            "source": "manager_agent",
-            "target": self.agent_name,
-            "content": {"workflow": "general_knowledge"},
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
+            "session_id": session_id,
+            "task_id": task_id,
+            "content": {"workflow": "general_knowledge", "status": "Completed"},
+            "timestamp": datetime.now().isoformat()
         })
         
         return {
@@ -747,14 +765,10 @@ Guidelines:
         
         logger.info("[Manager] → Starting Agentic RAG with ReAct Loop...")
         
-        await self.ws_manager.broadcast_agent_activity({
-            "type": "thinking",
-            "agent": self.agent_name,
-            "source": self.agent_name,
-            "content": {"status": "Initiating ReAct reasoning loop..."},
-            "timestamp": datetime.now().isoformat(),
-            "priority": 1
-        })
+        await self._broadcast_thinking(session_id, {
+            "status": "Initiating ReAct reasoning loop...",
+            "workflow": "agentic_rag"
+        }, task_id)
         
         if use_react:
             # ============== ReAct Loop Mode ==============

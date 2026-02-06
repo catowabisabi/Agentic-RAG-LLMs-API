@@ -290,6 +290,13 @@ class WebSocketManager:
         # Check if this is a session-specific message
         session_id = data.get("session_id")
         
+        # Log broadcast details
+        client_count = len(self.client_connections)
+        if client_count == 0:
+            logger.warning(f"[WS] No clients connected, cannot broadcast: {data.get('type')}")
+        else:
+            logger.info(f"[WS] Broadcasting to {client_count} clients: type={data.get('type')}, session={session_id}")
+        
         for client_id, connection in self.client_connections.items():
             try:
                 await connection.send_json(data)

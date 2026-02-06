@@ -1,0 +1,210 @@
+/**
+ * Event Timeline Styles
+ */
+
+.event-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+/* 當前階段指示器 */
+.current-stage-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  color: white;
+  font-weight: 500;
+  font-size: 0.875rem;
+  width: fit-content;
+}
+
+/* 時間線容器 */
+.timeline-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* 時間線項目 */
+.timeline-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-left: 3px solid #e5e7eb;
+  padding-left: 1rem;
+  margin-left: 0.75rem;
+  position: relative;
+}
+
+.timeline-item.latest {
+  border-left-style: dashed;
+}
+
+.timeline-item.thinking {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/* 時間線圖標 */
+.timeline-icon {
+  position: absolute;
+  left: -0.75rem;
+  top: 0.75rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: white;
+}
+
+/* 時間線內容 */
+.timeline-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.timeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agent-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: #374151;
+}
+
+.timestamp {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.timeline-message {
+  font-size: 0.875rem;
+  color: #4b5563;
+  line-height: 1.5;
+}
+
+.timeline-sources {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+
+/* 處理中指示器 */
+.processing-indicator {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.processing-indicator .dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background-color: #3b82f6;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.processing-indicator .dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.processing-indicator .dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+/* 階段進度條 */
+.stage-progress {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 1rem 0;
+}
+
+.stage-dot {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: white;
+  transition: all 0.3s ease;
+}
+
+.stage-dot.active {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+}
+
+.stage-dot.future {
+  color: #9ca3af;
+}
+
+.stage-connector {
+  flex: 1;
+  height: 3px;
+  min-width: 1rem;
+  transition: background-color 0.3s ease;
+}
+
+/* 動畫 */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .agent-name {
+    color: #f3f4f6;
+  }
+  
+  .timeline-message {
+    color: #d1d5db;
+  }
+  
+  .timeline-sources {
+    color: #9ca3af;
+  }
+  
+  .timeline-item {
+    border-left-color: #4b5563;
+  }
+}

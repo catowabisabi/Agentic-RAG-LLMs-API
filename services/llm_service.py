@@ -408,8 +408,49 @@ class LLMService:
         """清空快取"""
         if self.cache:
             self.cache.clear()
-            logger.info("[LLMService] Cache cleared")
-
+            logger.info("[LLMService] Cache cleared")    
+    async def generate_with_structured_output(
+        self,
+        prompt_key: str,
+        output_schema: type,
+        variables: Dict[str, Any] = None,
+        user_input: str = "",
+        temperature: float = 0.1
+    ) -> Any:
+        """
+        生成結構化輸出（使用 LLM with_structured_output）
+        
+        Args:
+            prompt_key: Prompt 配置鍵
+            output_schema: Pydantic 模型類
+            variables: 插入 prompt 的變數
+            user_input: 用戶輸入
+            temperature: 溫度參數
+        
+        Returns:
+            output_schema 實例
+        """
+        try:
+            # 創建結構化輸出的 LLM
+            structured_llm = self._llm.with_structured_output(output_schema)
+            
+            # 構建 prompt
+            prompt = user_input
+            if variables:
+                for key, value in variables.items():
+                    prompt = prompt.replace(f"{{{key}}}", str(value))
+            
+            # 調用 LLM
+            result = await structured_llm.ainvoke(prompt)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[LLMService] Structured output generation failed: {e}")
+            # 返回默認實例
+            if hasattr(output_schema, '__call__'):
+                return output_schema()
+            raise
 
 # 單例模式
 _llm_service: Optional[LLMService] = None

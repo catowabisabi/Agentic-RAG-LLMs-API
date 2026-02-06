@@ -102,6 +102,7 @@ class TaskAssignment(BaseModel):
     timeout_seconds: int = 300
     retry_count: int = 0
     max_retries: int = 3
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # Added for routing metadata
 
 
 class InterruptCommand(BaseModel):

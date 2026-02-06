@@ -17,6 +17,7 @@ Chat Service
 - Router 只負責協議適配（HTTP/WebSocket）
 - Service 包含所有業務邏輯
 - 使用 Service Layer (llm_service, rag_service, etc.)
+- 使用 UnifiedEventManager 統一事件管理
 """
 
 import logging
@@ -35,6 +36,10 @@ from services.task_manager import task_manager, TaskStatus
 from services.session_db import session_db, TaskStatus as DBTaskStatus, StepType
 from services.cerebro_memory import get_cerebro, MemoryType, MemoryImportance
 from agents.auxiliary.memory_capture_agent import process_message_for_memory, get_user_context_for_prompt
+from services.unified_event_manager import (
+    get_event_manager, init_event_manager,
+    EventType, Stage, TokenInfo
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,8 @@ class ChatService:
         self.registry = AgentRegistry()
         # 內存會話存儲（生產環境使用 Redis）
         self.conversations: Dict[str, List[Dict]] = {}
+        # 統一事件管理器
+        self.event_manager = init_event_manager(self.ws_manager, session_db)
     
     # ========================================
     # 會話管理
@@ -202,9 +209,9 @@ class ChatService:
             # 查詢每個數據庫
             for db_name in active_dbs:
                 try:
-                    results = vectordb_manager.query(
+                    results = await vectordb_manager.query(
+                        query=query,
                         db_name=db_name,
-                        query_text=query,
                         n_results=3
                     )
                     
@@ -349,17 +356,21 @@ class ChatService:
         # 更新任務狀態
         session_db.update_task_status(task_uid, DBTaskStatus.RUNNING)
         
-        # 添加初始化步驟
-        session_db.add_step(
-            task_uid=task_uid,
+        # 添加初始化步驟 - 使用統一事件管理器
+        await self.event_manager.emit_init(
             session_id=conversation_id,
-            agent_name="system",
-            step_type=StepType.THINKING,
-            content={"status": "Initializing task", "task_uid": task_uid}
+            task_id=task_uid,
+            message="收到您的訊息，正在處理..."
         )
         
         try:
             # ===== STEP 1: Entry Classification =====
+            await self.event_manager.emit_classifying(
+                session_id=conversation_id,
+                task_id=task_uid,
+                message="正在分析問題類型..."
+            )
+            
             entry_classifier = get_entry_classifier()
             classification = await entry_classifier.classify(message, user_context)
             
@@ -374,18 +385,22 @@ class ChatService:
             
             logger.info(f"[Entry] Classified as: {'casual' if classification.is_casual else 'task'} ({classification.reason})")
             
-            # 廣播分類結果
-            await self.ws_manager.broadcast_agent_activity({
-                "type": "entry_classification",
-                "agent": "entry_classifier",
-                "session_id": conversation_id,
-                "content": {
+            # 廣播分類結果 - 使用統一事件管理器
+            await self.event_manager.emit(
+                session_id=conversation_id,
+                task_id=task_uid,
+                event_type=EventType.STATUS,
+                stage=Stage.CLASSIFYING,
+                agent_name="entry_classifier",
+                message=f"分類完成：{'休閒聊天' if classification.is_casual else '任務查詢'}",
+                data={
                     "is_casual": classification.is_casual,
                     "reason": classification.reason,
                     "route_to": "casual_chat_agent" if classification.is_casual else "manager_agent"
                 },
-                "timestamp": datetime.now().isoformat()
-            })
+                intent=classification.intent if hasattr(classification, 'intent') else None,
+                handler=classification.handler if hasattr(classification, 'handler') else None
+            )
             
             # ===== STEP 2: Route to Appropriate Agent =====
             agents_involved = []
@@ -411,6 +426,7 @@ class ChatService:
                     context=context,
                     task_uid=task_uid,
                     conversation_id=conversation_id,
+                    classification=classification,
                     stream_callback=stream_callback
                 )
             
@@ -419,6 +435,16 @@ class ChatService:
             
             # 更新任務狀態為完成
             session_db.update_task_status(task_uid, DBTaskStatus.COMPLETED)
+            
+            # 發送結果事件
+            await self.event_manager.emit_result(
+                session_id=conversation_id,
+                task_id=task_uid,
+                message="處理完成",
+                answer=response_text,
+                sources=sources,
+                agents_involved=agents_involved
+            )
             
             # 捕獲記憶
             if enable_memory:
@@ -437,12 +463,13 @@ class ChatService:
             
             # 更新任務狀態為失敗
             session_db.update_task_status(task_uid, DBTaskStatus.FAILED)
-            session_db.add_step(
-                task_uid=task_uid,
+            
+            # 發送錯誤事件
+            await self.event_manager.emit_error(
                 session_id=conversation_id,
-                agent_name="system",
-                step_type=StepType.ERROR,
-                content={"error": str(e)}
+                task_id=task_uid,
+                message=f"處理失敗：{str(e)}",
+                error_code="PROCESSING_ERROR"
             )
             
             raise
@@ -460,22 +487,13 @@ class ChatService:
         
         casual_agent = get_casual_chat_agent()
         
-        session_db.add_step(
-            task_uid=task_uid,
+        # 發送思考事件
+        await self.event_manager.emit_thinking(
             session_id=conversation_id,
+            task_id=task_uid,
             agent_name="casual_chat_agent",
-            step_type=StepType.THINKING,
-            content={"status": "Processing casual chat", "query": message[:100]}
+            message="正在處理休閒對話..."
         )
-        
-        await self.ws_manager.broadcast_agent_activity({
-            "type": "agent_started",
-            "agent": "casual_chat_agent",
-            "task_id": task_uid,
-            "session_id": conversation_id,
-            "content": {"query": message[:100]},
-            "timestamp": datetime.now().isoformat()
-        })
         
         task = TaskAssignment(
             task_id=task_uid,
@@ -484,21 +502,16 @@ class ChatService:
             input_data={
                 "query": message,
                 "chat_history": chat_history,
-                "user_context": user_context
+                "user_context": user_context,
+                "session_id": conversation_id
             }
         )
         
-        result = await casual_agent.process(task)
+        result = await casual_agent.process_task(task)
         
-        session_db.add_step(
-            task_uid=task_uid,
-            session_id=conversation_id,
-            agent_name="casual_chat_agent",
-            step_type=StepType.COMPLETED,
-            content={"response": result.response[:200]}
-        )
+        response_text = result.get("response", str(result))
         
-        return result.response, ["casual_chat_agent"]
+        return response_text, result.get("agents_involved", ["casual_chat_agent"])
     
     async def _process_manager_agent(
         self,
@@ -509,6 +522,7 @@ class ChatService:
         context: Dict[str, Any],
         task_uid: str,
         conversation_id: str,
+        classification = None,
         stream_callback: Optional[Callable] = None
     ) -> Tuple[str, List[str], List[Dict]]:
         """處理 Manager Agent 任務"""
@@ -520,32 +534,32 @@ class ChatService:
         rag_context = ""
         sources = []
         if use_rag:
-            session_db.add_step(
-                task_uid=task_uid,
+            # 發送檢索事件
+            await self.event_manager.emit_retrieval(
                 session_id=conversation_id,
-                agent_name="rag_system",
-                step_type=StepType.SEARCHING,
-                content={"status": "Querying knowledge bases"}
+                task_id=task_uid,
+                message="正在搜尋相關知識庫..."
             )
             
             rag_context, sources = await self.get_rag_context(message)
             
             if sources:
-                session_db.add_step(
-                    task_uid=task_uid,
+                # 發送檢索結果事件
+                await self.event_manager.emit(
                     session_id=conversation_id,
-                    agent_name="rag_system",
-                    step_type=StepType.COMPLETED,
-                    content={
-                        "sources_count": len(sources),
-                        "context_length": len(rag_context)
-                    }
+                    task_id=task_uid,
+                    event_type=EventType.STATUS,
+                    stage=Stage.RETRIEVAL,
+                    agent_name="rag_agent",
+                    message=f"找到 {len(sources)} 條相關資料",
+                    sources=sources[:5],  # 限制傳輸數量
+                    data={"context_length": len(rag_context)}
                 )
         
-        # 創建任務分配
+        # 創建任務分配 (使用 user_query 以觸發正確的路由邏輯)
         task = TaskAssignment(
             task_id=task_uid,
-            task_type="coordinated_query",
+            task_type="user_query",
             description=message,
             input_data={
                 "query": message,
@@ -553,38 +567,54 @@ class ChatService:
                 "user_context": user_context,
                 "rag_context": rag_context,
                 "use_rag": use_rag,
-                "additional_context": context
+                "additional_context": context,
+                # 從 EntryClassifier 傳遞 intent 路由信息
+                "intent": classification.intent if classification and hasattr(classification, 'intent') else None,
+                "handler": classification.handler if classification and hasattr(classification, 'handler') else None,
+                "matched_by": classification.matched_by if classification and hasattr(classification, 'matched_by') else "internal",
+                # 傳遞 session_id 給 manager_agent 用於廣播
+                "session_id": conversation_id,
+                "conversation_id": conversation_id
             }
         )
         
-        # 廣播開始
-        await self.ws_manager.broadcast_agent_activity({
-            "type": "agent_started",
-            "agent": "manager_agent",
-            "task_id": task_uid,
-            "session_id": conversation_id,
-            "content": {"query": message[:100]},
-            "timestamp": datetime.now().isoformat()
-        })
+        # 發送規劃事件
+        await self.event_manager.emit_planning(
+            session_id=conversation_id,
+            task_id=task_uid,
+            message="正在分析問題，制定回答策略...",
+            plan_steps=["分析問題", "查找資料", "整合回答"]
+        )
+        
+        # 發送執行事件
+        await self.event_manager.emit_thinking(
+            session_id=conversation_id,
+            task_id=task_uid,
+            agent_name="manager_agent",
+            message="正在處理您的查詢..."
+        )
         
         # 處理任務
-        result = await manager.process(task)
+        result = await manager.process_task(task)
         
-        # 記錄完成
-        session_db.add_step(
-            task_uid=task_uid,
+        # 提取響應文本（result 是 Dict）
+        response_text = result.get("response", result.get("content", str(result)))
+        agents_used = result.get("agents_involved", [])
+        result_sources = result.get("sources", [])
+        
+        # 發送整合事件
+        await self.event_manager.emit_synthesis(
             session_id=conversation_id,
-            agent_name="manager_agent",
-            step_type=StepType.COMPLETED,
-            content={
-                "response": result.response[:200],
-                "agents_used": result.metadata.get("agents_used", [])
-            }
+            task_id=task_uid,
+            message="正在整合資訊，生成最終回答..."
         )
         
-        agents_involved = ["manager_agent"] + result.metadata.get("agents_used", [])
+        agents_involved = ["manager_agent"] + agents_used
         
-        return result.response, agents_involved, sources
+        # 合併 RAG sources 和 result sources
+        all_sources = sources + result_sources
+        
+        return response_text, agents_involved, all_sources
     
     # ========================================
     # 任務管理
