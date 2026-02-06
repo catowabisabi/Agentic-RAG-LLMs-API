@@ -62,32 +62,42 @@ class ClassifierAgent(BaseAgent):
         Returns:
             Dict containing 'decision' (bool), 'reason' (str)
         """
-        try:
-            result = await self.llm_service.generate_with_structured_output(
-                prompt_key="classifier_agent",
-                output_schema=ClassificationResult,
-                variables={
-                    "context": context if context else "No specific context provided.",
-                    "content": content,
-                    "criterion": criterion
-                }
-            )
-            
-            return {
-                "decision": result.decision,
-                "reason": result.reason,
-                "confidence": result.confidence,
-                "meta": {
-                    "agent": self.agent_name,
-                    "criterion": criterion
-                }
+        # [NO FALLBACK] Errors propagate for testing visibility
+        
+        # Build the prompt explicitly
+        prompt = f"""You are a binary classifier. Make a YES/NO decision based on the criterion.
+
+Context: {context if context else "No specific context provided."}
+
+Content to analyze: "{content}"
+
+Criterion (what to determine):
+{criterion}
+
+Based on the criterion above, determine:
+- decision: true if the content matches the criterion, false otherwise
+- reason: brief explanation for your decision
+- confidence: your confidence level (0.0 to 1.0)
+
+IMPORTANT: 
+- "{content}" is the actual user message to analyze
+- Short messages like "Hello!" or "Hi" are valid content, NOT empty
+- Make decision based on the ACTUAL content provided
+"""
+        
+        result = await self.llm_service.generate_with_structured_output(
+            prompt_key="classifier_agent",
+            output_schema=ClassificationResult,
+            user_input=prompt,
+            temperature=0.2
+        )
+        
+        return {
+            "decision": result.decision,
+            "reason": result.reason,
+            "confidence": result.confidence,
+            "meta": {
+                "agent": self.agent_name,
+                "criterion": criterion
             }
-            
-        except Exception as e:
-            logger.error(f"[ClassifierAgent] Error: {e}")
-            return {
-                "decision": False,
-                "reason": f"Classification error: {str(e)}",
-                "confidence": 0.0,
-                "meta": {"error": True}
-            }
+        }
