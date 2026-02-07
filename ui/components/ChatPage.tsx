@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageSquare, Send, Trash2, Plus, Edit2, Check, X, Database, Loader2, Brain, Wifi, WifiOff, StopCircle, Zap, Activity, Clock, AlertTriangle, CheckCircle2, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import { chatAPI, createWebSocket } from '../lib/api';
+import { useWebSocket } from '../contexts/WebSocketContext';
 import MarkdownRenderer from './MarkdownRenderer';
 
 interface Source {
@@ -75,6 +76,7 @@ const getAgentStateIcon = (state: string) => {
 };
 
 export default function ChatPage() {
+  const globalWs = useWebSocket();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -101,10 +103,18 @@ export default function ChatPage() {
   const activeSession = sessions.find(s => s.id === activeSessionId);
   const messages = activeSession?.messages || [];
   
+  // Merge agent statuses from local WS and global context
+  const mergedAgentStatuses = { ...globalWs.agentStatuses, ...Object.fromEntries(
+    Object.entries(agentStatuses).map(([k, v]) => [k, v])
+  ) };
+  
   // Check if any agent is currently working
   const hasWorkingAgents = Object.values(agentStatuses).some(
     a => ['working', 'thinking', 'calling_llm', 'querying_rag', 'processing'].includes(a.state?.toLowerCase())
   );
+  
+  // Use global WS status as fallback
+  const effectiveWsConnected = wsConnected || globalWs.status === 'connected';
 
   // WebSocket connection for real-time thinking updates
   useEffect(() => {
@@ -725,9 +735,9 @@ export default function ChatPage() {
 
           {/* WebSocket Status */}
           <div className="flex-shrink-0 ml-auto">
-            <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${wsConnected ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
-              {wsConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-              {wsConnected ? 'Live' : 'Offline'}
+            <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${effectiveWsConnected ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
+              {effectiveWsConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              {effectiveWsConnected ? 'Live' : 'Offline'}
             </div>
           </div>
         </div>

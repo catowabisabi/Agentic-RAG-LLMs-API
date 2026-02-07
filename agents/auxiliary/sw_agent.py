@@ -346,7 +346,8 @@ Output: OpenDoc, OpenDoc6, OpenDoc7, LoadFile, swOpenDoc"""
             answer = await self._generate_answer(query, result)
             
             await self.broadcast.agent_status(
-                self.agent_name, "completed", task.task_id
+                self.agent_name, "completed", task.task_id, 
+                {"query": query, "result_count": len(result.get("documents", []))}
             )
             
             return {

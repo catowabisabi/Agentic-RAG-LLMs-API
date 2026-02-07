@@ -6,9 +6,13 @@ REST API endpoints for agent management:
 - Get agent status
 - Send tasks to agents
 - Activity history (via EventBus)
+- Custom agent CRUD (SQLite-backed)
 """
 
 import logging
+import json
+import sqlite3
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -34,6 +38,31 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+# ============== Custom Agents DB ==============
+CUSTOM_AGENTS_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "custom_agents.db")
+
+def _init_custom_agents_db():
+    conn = sqlite3.connect(CUSTOM_AGENTS_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS custom_agents (
+            name TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            description TEXT,
+            system_prompt TEXT,
+            model TEXT DEFAULT 'gpt-4o-mini',
+            temperature REAL DEFAULT 0.7,
+            tools TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_init_custom_agents_db()
 
 
 class TaskRequest(BaseModel):
@@ -425,3 +454,84 @@ async def interrupt_task(task_id: str, reason: str = "User requested"):
         "reason": reason,
         "message": "Interrupt requested. Task will stop at next checkpoint."
     }
+
+
+# ============== Custom Agent CRUD ==============
+
+class CustomAgentRequest(BaseModel):
+    """Request to create or update a custom agent"""
+    name: str = Field(description="Unique agent name (snake_case)")
+    display_name: str = Field(description="Human-friendly name")
+    role: str = Field(description="Agent role description")
+    description: str = Field(default="", description="Detailed description")
+    system_prompt: str = Field(default="", description="System prompt for the LLM")
+    model: str = Field(default="gpt-4o-mini", description="LLM model to use")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    tools: List[str] = Field(default_factory=list, description="Tool names the agent can use")
+    enabled: bool = Field(default=True)
+
+
+@router.get("/custom/list")
+async def list_custom_agents():
+    """List all custom agents from the database"""
+    conn = sqlite3.connect(CUSTOM_AGENTS_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM custom_agents ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return {"custom_agents": [dict(r) for r in rows]}
+
+
+@router.post("/custom/create")
+async def create_custom_agent(request: CustomAgentRequest):
+    """Create a new custom agent definition"""
+    now = datetime.now().isoformat()
+    try:
+        conn = sqlite3.connect(CUSTOM_AGENTS_DB)
+        conn.execute(
+            """INSERT INTO custom_agents (name, display_name, role, description, system_prompt, model, temperature, tools, created_at, updated_at, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (request.name, request.display_name, request.role, request.description,
+             request.system_prompt, request.model, request.temperature,
+             json.dumps(request.tools), now, now, 1 if request.enabled else 0)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "agent_name": request.name, "message": f"Custom agent '{request.display_name}' created"}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"Agent '{request.name}' already exists")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/custom/{agent_name}")
+async def update_custom_agent(agent_name: str, request: CustomAgentRequest):
+    """Update an existing custom agent"""
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(CUSTOM_AGENTS_DB)
+    cur = conn.execute("SELECT name FROM custom_agents WHERE name = ?", (agent_name,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail=f"Custom agent '{agent_name}' not found")
+    conn.execute(
+        """UPDATE custom_agents SET display_name=?, role=?, description=?, system_prompt=?, model=?, temperature=?, tools=?, updated_at=?, enabled=?
+           WHERE name=?""",
+        (request.display_name, request.role, request.description, request.system_prompt,
+         request.model, request.temperature, json.dumps(request.tools), now,
+         1 if request.enabled else 0, agent_name)
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "agent_name": agent_name, "message": f"Custom agent '{agent_name}' updated"}
+
+
+@router.delete("/custom/{agent_name}")
+async def delete_custom_agent(agent_name: str):
+    """Delete a custom agent"""
+    conn = sqlite3.connect(CUSTOM_AGENTS_DB)
+    cur = conn.execute("DELETE FROM custom_agents WHERE name = ?", (agent_name,))
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail=f"Custom agent '{agent_name}' not found")
+    return {"success": True, "agent_name": agent_name, "message": f"Custom agent '{agent_name}' deleted"}

@@ -1,6 +1,7 @@
 'use client';
 
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { WebSocketProvider } from '../contexts/WebSocketContext';
 import Layout from '../components/Layout';
 import LoginForm from '../components/LoginForm';
 import '../styles/globals.css';
@@ -12,7 +13,11 @@ function AuthenticatedApp({ children }: { children: React.ReactNode }) {
     return <LoginForm />;
   }
 
-  return <Layout>{children}</Layout>;
+  return (
+    <WebSocketProvider>
+      <Layout>{children}</Layout>
+    </WebSocketProvider>
+  );
 }
 
 export default function RootLayout({

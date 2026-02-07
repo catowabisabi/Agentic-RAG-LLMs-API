@@ -29,7 +29,7 @@ interface LayoutProps {
 }
 
 export default function Layout({ children }: LayoutProps) {
-  const { logout } = useAuth();
+  const { logout, username, role, isAdmin } = useAuth();
   const pathname = usePathname();
 
   return (
@@ -70,8 +70,15 @@ export default function Layout({ children }: LayoutProps) {
           })}
         </nav>
 
-        {/* Logout */}
-        <div className="p-4 border-t border-gray-700">
+        {/* User Info + Logout */}
+        <div className="p-4 border-t border-gray-700 space-y-2">
+          <div className="px-4 py-2 flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isAdmin ? 'bg-yellow-400' : 'bg-green-400'}`} />
+            <span className="text-sm text-gray-300">{username}</span>
+            <span className={`ml-auto text-xs px-2 py-0.5 rounded ${isAdmin ? 'bg-yellow-900/50 text-yellow-400' : 'bg-gray-700 text-gray-400'}`}>
+              {role}
+            </span>
+          </div>
           <button
             onClick={logout}
             className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-gray-300 hover:bg-red-900/50 hover:text-red-300 transition-colors"

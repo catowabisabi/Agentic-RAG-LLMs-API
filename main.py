@@ -64,6 +64,7 @@ async def create_agents():
     from agents.auxiliary.summarize_agent import SummarizeAgent
     from agents.auxiliary.translate_agent import TranslateAgent
     from agents.auxiliary.calculation_agent import CalculationAgent
+    from agents.auxiliary.sw_agent import SWAgent
     
     # Register core agents (await async method)
     logger.info("Registering core agents...")
@@ -84,6 +85,7 @@ async def create_agents():
     await registry.register_agent(SummarizeAgent())
     await registry.register_agent(TranslateAgent())
     await registry.register_agent(CalculationAgent())
+    await registry.register_agent(SWAgent())
     
     logger.info(f"Registered {len(registry._agents)} agents")
     
