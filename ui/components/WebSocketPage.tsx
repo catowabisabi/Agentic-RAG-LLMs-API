@@ -166,7 +166,7 @@ export default function WebSocketPage() {
     ? events.filter(e => e.type === filterType || e.type.includes(filterType))
     : events.filter(e => !['heartbeat', 'pong', 'ping', 'system'].includes(e.type));
 
-  const eventTypes = [...new Set(events.map(e => e.type))].sort();
+  const eventTypes = Array.from(new Set(events.map(e => e.type))).sort();
 
   return (
     <div className="h-screen flex flex-col bg-[#1e1e1e] text-[#d4d4d4]">
