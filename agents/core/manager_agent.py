@@ -116,7 +116,8 @@ class ManagerAgent(BaseAgent):
             "tool_agent",
             "summarize_agent",
             "translate_agent",
-            "calculation_agent"
+            "calculation_agent",
+            "sw_agent"
         ]
         
         # Add custom message handlers
@@ -231,7 +232,10 @@ class ManagerAgent(BaseAgent):
 6. summarization: Summarize content, create summaries
    Examples: "Summarize this article", "Give me the key points of..."
 
-7. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
+7. solidworks_api: SolidWorks API, CAD, modeling, technical queries
+   Examples: "SolidWorks API", "如何創建草圖", "模型操作", "API方法", "VBA代碼", "C#代碼"
+
+8. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
    Examples: "Compare X and Y", "Create a plan for...", "Analyze and recommend..."
 
 User query: "{query}"
@@ -249,7 +253,7 @@ Format: category|reason"""
         reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
         
         # Validate query_type
-        valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "complex_planning"]
+        valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "solidworks_api", "complex_planning"]
         if query_type not in valid_types:
             # [NO FALLBACK] LLM must return valid type - raise error for visibility
             raise ValueError(f"LLM returned invalid query type: {query_type}. Valid types: {valid_types}")
@@ -470,6 +474,9 @@ Format: category|reason"""
                 "translate": self._handle_translation,
                 "summarization": self._handle_summarization,
                 "summarize": self._handle_summarization,
+                # SolidWorks
+                "solidworks_api": self._handle_solidworks_api,
+                "sw_api": self._handle_solidworks_api,
                 # Planning
                 "planning": self._handle_complex_query,
                 "plan_complex": self._handle_complex_query,
@@ -517,6 +524,8 @@ Format: category|reason"""
             return await self._handle_translation(task)
         elif classification.query_type == "summarization":
             return await self._handle_summarization(task)
+        elif classification.query_type == "solidworks_api":
+            return await self._handle_solidworks_api(task)
         elif classification.query_type == "complex_planning":
             return await self._handle_complex_query(task)
         else:
@@ -706,6 +715,74 @@ Guidelines:
             "agents_involved": agents_involved,
             "sources": [],
             "workflow": "summarization"
+        }
+
+    async def _handle_solidworks_api(self, task: TaskAssignment) -> Dict[str, Any]:
+        """Handle SolidWorks API queries using SWAgent"""
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        session_id = task.input_data.get("session_id") or task.input_data.get("conversation_id")
+        
+        logger.info(f"[Manager] SolidWorks API query - using SWAgent: {query[:50]}...")
+        
+        agents_involved = ["manager_agent"]
+        
+        await self._broadcast_thinking(session_id, {
+            "status": "Processing SolidWorks API query...",
+            "task": "solidworks_api"
+        }, task_id)
+        
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "sw_agent",
+            "source": self.agent_name,
+            "target": "sw_agent",
+            "content": {"task": "search", "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+        agents_involved.append("sw_agent")
+        
+        sw_agent = self.registry.get_agent("sw_agent")
+        if sw_agent:
+            sw_task = TaskAssignment(
+                task_id=task_id,
+                task_type="search",
+                description=query,
+                input_data={"query": query, "type": "search"}
+            )
+            result = await sw_agent.process_task(sw_task)
+            response_text = result.get("response", str(result))
+            sources = result.get("search_results", {})
+            
+            # Format sources for frontend display
+            formatted_sources = []
+            if isinstance(sources, dict):
+                if sources.get("documents"):
+                    for doc in sources["documents"][:3]:
+                        formatted_sources.append({
+                            "title": doc.get("title", "SolidWorks API Doc"),
+                            "content": doc.get("content", "")[:300],
+                            "source": "SolidWorks API Database",
+                            "score": 0.9
+                        })
+                if sources.get("code_examples"):
+                    for code in sources["code_examples"][:2]:
+                        formatted_sources.append({
+                            "title": f"Code Example: {code.get('title', 'Untitled')}",
+                            "content": f"Language: {code.get('language', 'Unknown')}\n{code.get('code', '')[:200]}...",
+                            "source": "SolidWorks Code Examples",
+                            "score": 0.85
+                        })
+        else:
+            response_text = "SolidWorks API agent not available."
+            formatted_sources = []
+        
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": formatted_sources,
+            "workflow": "solidworks_api"
         }
 
     async def _handle_simple_rag_query(self, task: TaskAssignment) -> Dict[str, Any]:

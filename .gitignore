@@ -2,7 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# MSFT Example directory (git submodule)
 MSFT_Agentic_Agent_Example/
+example/MSFT_Agentic_Agent_Example/
+
 # C extensions
 *.so
 
