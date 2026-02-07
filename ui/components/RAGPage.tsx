@@ -174,11 +174,21 @@ export default function RAGPage() {
       </div>
 
       <div className="flex gap-2 mb-6 flex-wrap">
-        {[{ id: 'smart', label: 'Smart Search', icon: Zap }, { id: 'databases', label: 'Databases', icon: FolderOpen }, { id: 'documents', label: 'Documents', icon: FileText }, { id: 'query', label: 'Query', icon: Search }, { id: 'add', label: 'Add Document', icon: Plus }].map(({ id, label, icon: Icon }) => (
-          <button key={id} onClick={() => setActiveTab(id as any)} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === id ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
-            <Icon className="w-4 h-4" />{label}
-          </button>
-        ))}
+        <button onClick={() => setActiveTab('smart')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'smart' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <Zap className="w-4 h-4" />Smart Search
+        </button>
+        <button onClick={() => setActiveTab('databases')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'databases' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <FolderOpen className="w-4 h-4" />Databases
+        </button>
+        <button onClick={() => setActiveTab('documents')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'documents' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <FileText className="w-4 h-4" />Documents
+        </button>
+        <button onClick={() => setActiveTab('query')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'query' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <Search className="w-4 h-4" />Query
+        </button>
+        <button onClick={() => setActiveTab('add')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'add' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <Plus className="w-4 h-4" />Add Document
+        </button>
       </div>
 
       {activeTab === 'smart' && (

@@ -66,11 +66,18 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const eventIdCounter = useRef(0);
 
   const addEvent = useCallback((type: string, data: any, raw: string, agent?: string) => {
+    // Defensive check: ensure data doesn't contain agent info objects that could be rendered
+    let safeData = data;
+    if (data && typeof data === 'object' && data.name && data.role && data.icon) {
+      // If data is an agent info object, convert it to a safe format
+      safeData = { agent_info: `${data.name} (${data.role})`, icon: data.icon };
+    }
+    
     const evt: WSEvent = {
       id: `ws-${Date.now()}-${eventIdCounter.current++}`,
       type,
       agent,
-      data,
+      data: safeData,
       raw,
       timestamp: new Date(),
     };

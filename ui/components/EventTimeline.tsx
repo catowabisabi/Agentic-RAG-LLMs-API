@@ -73,6 +73,9 @@ function TimelineItem({ event, isLast }: TimelineItemProps) {
   const agentInfo = getAgentInfo(event.agent.name);
   const isThinking = isThinkingEvent(event);
   
+  // Defensive check: ensure we only use string properties from agentInfo
+  const agentRole = typeof agentInfo.role === 'string' ? agentInfo.role : 'Agent';
+  
   return (
     <div 
       className={`timeline-item ${isLast ? 'latest' : ''} ${isThinking ? 'thinking' : ''}`}
@@ -89,7 +92,7 @@ function TimelineItem({ event, isLast }: TimelineItemProps) {
       {/* 內容 */}
       <div className="timeline-content">
         <div className="timeline-header">
-          <span className="agent-name">{agentInfo.role}</span>
+          <span className="agent-name">{agentRole}</span>
           <span className="timestamp">
             {new Date(event.timestamp).toLocaleTimeString()}
           </span>

@@ -52,6 +52,10 @@ const EventCard = ({ event, compact }: { event: WSEvent; compact?: boolean }) =>
   const formatContent = (data: any): string => {
     if (!data) return '';
     if (typeof data === 'string') return data;
+    // Defensive check: if data has agent info structure, extract meaningful content
+    if (data.name && data.role && data.icon) {
+      return `Agent: ${data.name} (${data.role})`;
+    }
     const d = data.data || data.content || data;
     if (typeof d === 'string') return d;
     if (d.message) return d.message;

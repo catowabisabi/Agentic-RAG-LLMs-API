@@ -647,6 +647,10 @@ export default function ChatPage() {
 
   const formatThinkingContent = (content: any): string => {
     if (typeof content === 'string') return content;
+    // Defensive check: prevent agent info objects from being stringified incorrectly
+    if (content && typeof content === 'object' && content.name && content.role && content.icon) {
+      return `Agent: ${content.name} (${content.role})`;
+    }
     if (content.thought) return content.thought;
     if (content.status) return content.status;
     if (content.task) return `Task: ${content.task}`;
@@ -836,7 +840,7 @@ export default function ChatPage() {
                           {msg.thinking.map((step, i) => (
                             <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
                               <span>{getStepIcon(step.type)}</span>
-                              <span className="text-purple-400 flex-shrink-0">[{step.agent}]</span>
+                              <span className="text-purple-400 flex-shrink-0">[{String(step.agent || 'system')}]</span>
                               <span className="flex-1">{formatThinkingContent(step.content)}</span>
                             </div>
                           ))}
@@ -886,8 +890,8 @@ export default function ChatPage() {
                             <div key={i} className="flex items-center gap-2 p-2 bg-gray-800/50 rounded">
                               {getAgentStateIcon(agent.state)}
                               <div className="flex flex-col min-w-0">
-                                <span className="text-xs text-white truncate">{agent.name}</span>
-                                <span className="text-xs text-gray-400 truncate">{agent.message || agent.state}</span>
+                                <span className="text-xs text-white truncate">{String(agent.name || '')}</span>
+                                <span className="text-xs text-gray-400 truncate">{String(agent.message || agent.state || '')}</span>
                               </div>
                             </div>
                           ))}
@@ -909,7 +913,7 @@ export default function ChatPage() {
                         {thinkingSteps.map((step, i) => (
                           <div key={i} className="text-xs text-gray-400 flex items-start gap-2">
                             <span>{getStepIcon(step.type)}</span>
-                            <span className="text-purple-400 flex-shrink-0">[{step.agent}]</span>
+                            <span className="text-purple-400 flex-shrink-0">[{String(step.agent || 'system')}]</span>
                             <span className="flex-1">{formatThinkingContent(step.content)}</span>
                           </div>
                         ))}

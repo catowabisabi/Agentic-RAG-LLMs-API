@@ -202,14 +202,21 @@ export default function AgentsPage() {
   };
 
   const handleCreateAgent = async () => {
-    if (!newAgent.name || !newAgent.display_name || !newAgent.role) return;
+    console.log('[AgentsPage] Creating agent with data:', newAgent);
+    if (!newAgent.name || !newAgent.display_name || !newAgent.role) {
+      console.log('[AgentsPage] Validation failed:', { name: !!newAgent.name, display_name: !!newAgent.display_name, role: !!newAgent.role });
+      return;
+    }
     setCreatingAgent(true); setCreateAgentResult(null);
     try {
+      console.log('[AgentsPage] Calling API...');
       const response = await agentAPI.createCustomAgent(newAgent);
+      console.log('[AgentsPage] API response:', response.data);
       setCreateAgentResult(response.data);
       setNewAgent({ name: '', display_name: '', role: '', description: '', system_prompt: '', model: 'gpt-4o-mini', temperature: 0.7, tools: [], enabled: true });
       fetchCustomAgents();
     } catch (err: any) {
+      console.error('[AgentsPage] Create error:', err);
       setCreateAgentResult({ error: err.response?.data?.detail || err.message });
     }
     setCreatingAgent(false);
@@ -520,7 +527,14 @@ export default function AgentsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">Name (snake_case)</label>
-                  <input type="text" value={newAgent.name} onChange={e => setNewAgent({...newAgent, name: e.target.value.replace(/[^a-z0-9_]/g, '')})} placeholder="my_agent" className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm" />
+                  <input 
+                    type="text" 
+                    value={newAgent.name} 
+                    onChange={e => setNewAgent({...newAgent, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '')})} 
+                    placeholder="my_agent" 
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm" 
+                  />
+                  {newAgent.name && <p className="text-xs text-gray-500 mt-1">Preview: {newAgent.name}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">Display Name</label>
