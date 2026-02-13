@@ -22,11 +22,19 @@ services:
       - API_PORT=1130
       - MCP_ENABLED=true
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_ENABLED=true
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
     volumes:
       - ../rag-database:/app/data
       - ../documents:/app/documents
     networks:
       - agentic-network
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:1130/health"]
@@ -85,20 +93,51 @@ services:
     profiles:
       - standalone-db
 
-  # Redis (for production message queue)
+  # Redis (session storage & Celery broker)
   redis:
     image: redis:alpine
     container_name: agentic-rag-redis
     ports:
-      - "6379:6379"
+      - \"6379:6379\"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     networks:
       - agentic-network
     restart: unless-stopped
+    healthcheck:
+      test: [\"CMD\", \"redis-cli\", \"ping\"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+  # Celery Worker (distributed task processing)
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: agentic-rag-celery-worker
+    command: celery -A services.celery_service:celery_app worker --loglevel=info --concurrency=2
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o-mini}
+      - CELERY_ENABLED=true
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - REDIS_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      - CHROMA_DB_PATH=/app/data/vectordb
+      - MEMORY_DB_PATH=/app/data/memory
+    volumes:
+      - ../rag-database:/app/data
+    networks:
+      - agentic-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
     profiles:
       - production
-
 networks:
   agentic-network:
     driver: bridge

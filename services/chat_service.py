@@ -20,6 +20,7 @@ Chat Service
 - 使用 UnifiedEventManager 統一事件管理
 """
 
+import asyncio
 import logging
 import uuid
 from typing import Dict, Any, List, Optional, Tuple, Callable
@@ -27,6 +28,8 @@ from datetime import datetime
 from enum import Enum
 
 from agents.shared_services.agent_registry import AgentRegistry
+from services.redis_service import get_redis_service
+from services.celery_service import get_celery_service
 from agents.shared_services.websocket_manager import WebSocketManager
 from agents.shared_services.message_protocol import TaskAssignment
 from agents.core.entry_classifier import get_entry_classifier
@@ -88,13 +91,27 @@ class ChatService:
         self.config = Config()
         self.ws_manager = WebSocketManager()
         self.registry = AgentRegistry()
-        # 內存會話存儲（生產環境使用 Redis）
+        # Redis 服務（優雅降級到內存）
+        self.redis = get_redis_service()
+        # Celery 服務（優雅降級到 asyncio）
+        self.celery = get_celery_service()
+        # 內存會話存儲（Redis 不可用時的 fallback）
         self.conversations: Dict[str, List[Dict]] = {}
         # 統一事件管理器
         self.event_manager = init_event_manager(self.ws_manager, session_db)
         
         # Architecture V2: Agentic Loop Engine (初始化時不創建，按需創建)
         self._agentic_loop: Optional[AgenticLoopEngine] = None
+        
+        # 嘗試連接 Redis
+        self._redis_initialized = False
+    
+    async def _ensure_redis(self):
+        """確保 Redis 已初始化（懶連接）"""
+        if not self._redis_initialized:
+            self._redis_initialized = True
+            if self.redis.enabled:
+                await self.redis.connect()
     
     def _get_agentic_loop(self, session_id: str) -> AgenticLoopEngine:
         """
@@ -178,6 +195,10 @@ class ChatService:
         # 確保 SessionDB 中也有記錄
         session_db.get_or_create_session(conversation_id, "Chat Session")
         
+        # 確保 Redis 中也有記錄
+        if self.redis.is_connected:
+            asyncio.create_task(self.redis.set_conversation(conversation_id, []))
+        
         return conversation_id
     
     def add_user_message(
@@ -190,12 +211,17 @@ class ChatService:
         message_id = str(uuid.uuid4())
         
         # 添加到內存
-        self.conversations[conversation_id].append({
+        msg_entry = {
             "id": message_id,
             "role": "user",
             "content": message,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        self.conversations[conversation_id].append(msg_entry)
+        
+        # 同步到 Redis（fire-and-forget）
+        if self.redis.is_connected:
+            asyncio.create_task(self.redis.append_message(conversation_id, msg_entry))
         
         # 添加到數據庫
         session_db.add_message(
@@ -237,12 +263,17 @@ class ChatService:
                 logger.warning(f"Failed to get task steps: {e}")
         
         # 添加到內存
-        self.conversations[conversation_id].append({
+        msg_entry = {
             "id": message_id,
             "role": "assistant",
             "content": message,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        self.conversations[conversation_id].append(msg_entry)
+        
+        # 同步到 Redis（fire-and-forget）
+        if self.redis.is_connected:
+            asyncio.create_task(self.redis.append_message(conversation_id, msg_entry))
         
         # 添加到數據庫（包含 thinking_steps）
         session_db.add_message(
@@ -373,7 +404,7 @@ class ChatService:
         response: str,
         conversation_id: str
     ):
-        """捕獲對話記憶（Cerebro）"""
+        """捕獲對話記憶（Cerebro）- Fire-and-forget，不阻塞主流程"""
         try:
             await process_message_for_memory(
                 user_id=user_id,
@@ -384,6 +415,19 @@ class ChatService:
             logger.info(f"[Cerebro] Captured memory for user {user_id}")
         except Exception as e:
             logger.warning(f"[Cerebro] Memory capture failed: {e}")
+
+    def _fire_and_forget_memory(
+        self,
+        user_id: str,
+        message: str,
+        response: str,
+        conversation_id: str
+    ):
+        """以 asyncio.create_task 啟動記憶捕獲，完全非阻塞"""
+        import asyncio
+        asyncio.create_task(
+            self.capture_memory(user_id, message, response, conversation_id)
+        )
     
     # ========================================
     # 核心處理邏輯
@@ -417,6 +461,9 @@ class ChatService:
             ProcessingResult: 處理結果
         """
         context = context or {}
+        
+        # 確保 Redis 已初始化
+        await self._ensure_redis()
         
         # 獲取或創建會話
         conversation_id = self.get_or_create_conversation(conversation_id)
@@ -548,9 +595,9 @@ class ChatService:
                 agents_involved=agents_involved
             )
             
-            # 捕獲記憶
+            # 捕獲記憶（fire-and-forget，完全非阻塞）
             if enable_memory:
-                await self.capture_memory(user_id, message, response_text, conversation_id)
+                self._fire_and_forget_memory(user_id, message, response_text, conversation_id)
             
             return ProcessingResult(
                 response=response_text,
@@ -609,6 +656,9 @@ class ChatService:
             ProcessingResult
         """
         context = context or {}
+        
+        # 確保 Redis 已初始化
+        await self._ensure_redis()
         
         # 獲取或創建會話
         conversation_id = self.get_or_create_conversation(conversation_id)
@@ -702,9 +752,9 @@ class ChatService:
         # 更新任務狀態
         session_db.update_task_status(task_uid, DBTaskStatus.COMPLETED)
         
-        # 捕獲記憶
+        # 捕獲記憶（fire-and-forget，完全非阻塞）
         if enable_memory:
-            await self.capture_memory(user_id, message, response_text, conversation_id)
+            self._fire_and_forget_memory(user_id, message, response_text, conversation_id)
         
         return ProcessingResult(
             response=response_text,
@@ -770,10 +820,10 @@ class ChatService:
         classification = None,
         stream_callback: Optional[Callable] = None
     ) -> Tuple[str, List[str], List[Dict]]:
-        """處理 Manager Agent 任務"""
-        from agents.core.manager_agent import get_manager_agent
+        """處理 Manager Agent 任務（使用 UnifiedManagerAgent）"""
+        from agents.core.unified_manager_agent import get_unified_manager
         
-        manager = get_manager_agent()
+        manager = get_unified_manager()
         
         # 獲取 RAG 上下文（如果啟用）
         rag_context = ""
@@ -874,7 +924,26 @@ class ChatService:
         enable_memory: bool,
         context: Dict[str, Any]
     ) -> str:
-        """創建後台任務（異步模式）"""
+        """
+        創建後台任務（異步模式）
+        
+        優先使用 Celery（分布式），fallback 到 asyncio（本地）。
+        """
+        # 嘗試 Celery
+        if self.celery.is_available:
+            celery_task_id = self.celery.submit_chat_task(
+                message=message,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                use_rag=use_rag,
+                enable_memory=enable_memory,
+                context=context
+            )
+            if celery_task_id:
+                logger.info(f"[ChatService] Task submitted to Celery: {celery_task_id}")
+                return celery_task_id
+        
+        # Fallback 到本地 asyncio task manager
         task_id = task_manager.create_task(
             task_type="chat",
             input_data={
@@ -887,7 +956,7 @@ class ChatService:
             }
         )
         
-        logger.info(f"[ChatService] Created background task {task_id} for conversation {conversation_id}")
+        logger.info(f"[ChatService] Background task {task_id} (asyncio) for conversation {conversation_id}")
         
         return task_id
     
@@ -928,6 +997,9 @@ class ChatService:
         """刪除會話"""
         if conversation_id in self.conversations:
             del self.conversations[conversation_id]
+            # 同步刪除 Redis
+            if self.redis.is_connected:
+                asyncio.create_task(self.redis.delete_conversation(conversation_id))
             return True
         return False
     
@@ -935,6 +1007,9 @@ class ChatService:
         """清空會話消息"""
         if conversation_id in self.conversations:
             self.conversations[conversation_id] = []
+            # 同步清空 Redis
+            if self.redis.is_connected:
+                asyncio.create_task(self.redis.set_conversation(conversation_id, []))
             return True
         return False
 

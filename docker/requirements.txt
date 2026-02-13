@@ -20,3 +20,7 @@ tiktoken
 python-dotenv
 pydantic
 requests
+
+# Redis & Celery
+redis
+celery[redis]

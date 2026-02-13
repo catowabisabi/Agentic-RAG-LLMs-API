@@ -192,14 +192,32 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - includes Redis & Celery status"""
     registry = AgentRegistry()
     
-    return {
+    health = {
         "status": "healthy",
         "agents": registry.get_system_health(),
         "auth_enabled": ENABLE_AUTH
     }
+    
+    # Redis health check
+    try:
+        from services.redis_service import get_redis_service
+        redis = get_redis_service()
+        health["redis"] = await redis.health_check()
+    except Exception as e:
+        health["redis"] = {"status": "error", "error": str(e)}
+    
+    # Celery health check
+    try:
+        from services.celery_service import get_celery_service
+        celery = get_celery_service()
+        health["celery"] = celery.health_check()
+    except Exception as e:
+        health["celery"] = {"status": "error", "error": str(e)}
+    
+    return health
 
 
 @app.get("/api/stats")

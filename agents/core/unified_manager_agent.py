@@ -151,7 +151,10 @@ class UnifiedManagerAgent(BaseAgent):
         """
         task_type = task.task_type
         
-        if task_type == "chat":
+        if task_type == "user_query":
+            # 委託給原始 manager_agent 的成熟路由邏輯
+            return await self._handle_user_query(task)
+        elif task_type == "chat":
             return await self._process_chat(task)
         elif task_type == "classify":
             return await self._classify_query(task)
@@ -161,6 +164,28 @@ class UnifiedManagerAgent(BaseAgent):
             return await self._perform_health_check()
         else:
             return await self._process_chat(task)
+    
+    async def _handle_user_query(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        處理用戶查詢 - 委託給 manager_agent 的成熟路由系統
+        
+        保留 manager_agent 的完整 handler 路由邏輯（包括 intent/handler 支持），
+        同時享用 unified_manager 的 Service Layer 優勢。
+        """
+        from agents.core.manager_agent import get_manager_agent
+        
+        manager = get_manager_agent()
+        result = await manager.process_task(task)
+        
+        # 添加 metacognition 反思（如果可用）
+        if self.metacognition and isinstance(result, dict):
+            try:
+                reflection = await self.metacognition.reflect_on_result(result)
+                result["metacognition"] = reflection
+            except Exception as e:
+                logger.debug(f"Metacognition reflection skipped: {e}")
+        
+        return result
     
     async def _classify_query(self, task: TaskAssignment) -> Dict[str, Any]:
         """
@@ -357,7 +382,12 @@ Respond in JSON format."""
         return health_status
 
 
-# Factory function for compatibility
+# Factory function for compatibility (singleton)
+_unified_manager_instance = None
+
 def get_unified_manager(agent_name: str = "unified_manager") -> UnifiedManagerAgent:
-    """Get or create the unified manager agent"""
-    return UnifiedManagerAgent(agent_name=agent_name)
+    """Get or create the unified manager agent (singleton)"""
+    global _unified_manager_instance
+    if _unified_manager_instance is None:
+        _unified_manager_instance = UnifiedManagerAgent(agent_name=agent_name)
+    return _unified_manager_instance
