@@ -356,6 +356,26 @@ class LLMService:
             
         except Exception as e:
             logger.error(f"[LLMService] Generation failed: {e}")
+            
+            # Check if this is an API key error
+            error_str = str(e)
+            if "401" in error_str or "invalid_api_key" in error_str.lower() or "incorrect api key" in error_str.lower():
+                # Broadcast API key error
+                try:
+                    from services.broadcast_service import get_broadcast_service
+                    broadcast = get_broadcast_service()
+                    await broadcast.custom(
+                        message_type="api_key_error",
+                        content={
+                            "error": "Invalid or missing API key",
+                            "provider": self.provider,
+                            "details": error_str,
+                            "action_required": "Please provide a valid API key"
+                        }
+                    )
+                except Exception as broadcast_error:
+                    logger.warning(f"Failed to broadcast API key error: {broadcast_error}")
+            
             raise
     
     def _prepare_messages(

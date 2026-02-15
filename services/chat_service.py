@@ -23,7 +23,7 @@ Chat Service
 import asyncio
 import logging
 import uuid
-from typing import Dict, Any, List, Optional, Tuple, Callable
+from typing import Dict, Any, List, Optional, Tuple, Callable, Union
 from datetime import datetime
 from enum import Enum
 
@@ -552,13 +552,19 @@ class ChatService:
             
             if classification.is_casual:
                 # Route to Casual Chat Agent
-                response_text, agents_involved = await self._process_casual_chat(
+                # Note: May escalate internally and return sources
+                result = await self._process_casual_chat(
                     message=message,
                     chat_history=chat_history,
                     user_context=user_context,
                     task_uid=task_uid,
                     conversation_id=conversation_id
                 )
+                # Handle tuple unpacking (may be 2 or 3 elements due to escalation)
+                if len(result) == 3:
+                    response_text, agents_involved, sources = result
+                else:
+                    response_text, agents_involved = result
             else:
                 # Route to Manager Agent
                 response_text, agents_involved, sources = await self._process_manager_agent(
@@ -776,8 +782,14 @@ class ChatService:
         user_context: str,
         task_uid: str,
         conversation_id: str
-    ) -> Tuple[str, List[str]]:
-        """處理休閒聊天"""
+    ) -> Union[Tuple[str, List[str], List[Dict]], Tuple[str, List[str]]]:
+        """
+        處理休閒聊天
+        
+        Returns:
+            - If escalated: (response_text, agents_involved, sources)
+            - Normal casual: (response_text, agents_involved)
+        """
         from agents.core.casual_chat_agent import get_casual_chat_agent
         
         casual_agent = get_casual_chat_agent()
@@ -804,6 +816,40 @@ class ChatService:
         
         result = await casual_agent.process_task(task)
         
+        # Check if casual chat agent escalated the query
+        if result.get("status") == "escalate":
+            reason = result.get("reason", "Query requires factual information")
+            logger.info(f"[ChatService] Casual chat escalated: {reason}. Rerouting to manager agent.")
+            
+            # Emit rerouting event
+            await self.event_manager.emit(
+                session_id=conversation_id,
+                task_id=task_uid,
+                event_type=EventType.STATUS,
+                stage=Stage.ROUTING,
+                agent_name="chat_service",
+                message=f"問題需要更深入處理，正在重新路由... ({reason})",
+                data={"escalation_reason": reason}
+            )
+            
+            # Re-route to manager agent (which will handle it properly)
+            # Call manager agent through normal path
+            response_text, agents_involved, sources = await self._process_manager_agent(
+                message=message,
+                chat_history=chat_history,
+                user_context=user_context,
+                use_rag=True,  # Enable RAG for escalated queries
+                context={},
+                task_uid=task_uid,
+                conversation_id=conversation_id,
+                classification=None,
+                stream_callback=None
+            )
+            
+            # Return the manager agent's response with sources (3-tuple)
+            return response_text, agents_involved, sources
+        
+        # Normal casual chat response (2-tuple)
         response_text = result.get("response", str(result))
         
         return response_text, result.get("agents_involved", ["casual_chat_agent"])

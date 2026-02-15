@@ -7,6 +7,7 @@ import {
   CheckCircle2, RefreshCw, Users, List, ChevronDown, ChevronRight
 } from 'lucide-react';
 import { chatAPI, sessionAPI, createWebSocket } from '../lib/api';
+import APIKeyModal from './APIKeyModal';
 
 // ============== Type Definitions ==============
 
@@ -362,6 +363,11 @@ export default function ChatPageV2() {
   const [showTaskPanel, setShowTaskPanel] = useState(true);
   const [showThinking, setShowThinking] = useState(true);
   
+  // API Key Modal state
+  const [showAPIKeyModal, setShowAPIKeyModal] = useState(false);
+  const [apiKeyProvider, setApiKeyProvider] = useState('openai');
+  const [apiKeyError, setApiKeyError] = useState('');
+  
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -437,6 +443,17 @@ export default function ChatPageV2() {
   }, []);
 
   const handleWebSocketMessage = useCallback((data: any) => {
+    // Handle API key error - show modal
+    if (data.type === 'api_key_error') {
+      console.log('[ChatV2] API Key Error detected:', data);
+      setApiKeyProvider(data.content?.provider || 'openai');
+      setApiKeyError(data.content?.details || 'Invalid or missing API key');
+      setShowAPIKeyModal(true);
+      setLoading(false);
+      setPendingInfo(null);
+      return;
+    }
+    
     // Handle heartbeat with agent statuses - update quietly without re-rendering unless active agents change
     if (data.type === 'heartbeat' && data.agent_statuses) {
       const newSummary = getAgentSummary(data.agent_statuses);
@@ -1346,6 +1363,14 @@ export default function ChatPageV2() {
           </div>
         )}
       </div>
+      
+      {/* API Key Modal */}
+      <APIKeyModal
+        isOpen={showAPIKeyModal}
+        onClose={() => setShowAPIKeyModal(false)}
+        provider={apiKeyProvider}
+        errorDetails={apiKeyError}
+      />
     </div>
   );
 }
