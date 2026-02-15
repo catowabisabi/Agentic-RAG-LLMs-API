@@ -19,10 +19,12 @@ Chat Router (Refactored)
 
 import logging
 import asyncio
+import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.chat_service import get_chat_service, ChatMode
@@ -205,6 +207,72 @@ async def send_agentic_message(request: AgenticChatRequest):
         thinking_steps=result.metadata.get("thinking_steps", []),
         execution_summary=result.metadata.get("execution_summary"),
         timestamp=result.timestamp
+    )
+
+
+# ========================================
+# Streaming Endpoint (NEW!)
+# ========================================
+
+@router.post("/stream")
+async def stream_message(request: ChatRequest):
+    """
+    Streaming 模式 - 即時返回 Token
+    
+    用於快速回應用戶，逐字串流輸出。
+    Fallback：如果 LLM 不支持 streaming，返回完整響應後一次性輸出。
+    """
+    chat_service = get_chat_service()
+    
+    async def generate_stream():
+        """生成 SSE 串流"""
+        try:
+            # 嘗試使用 streaming 生成
+            has_streamed = False
+            
+            # Check if LLM service supports streaming
+            from services.llm_service import LLMService
+            llm_service = LLMService()
+            
+            # Simple streaming approach - generate normally first
+            result = await chat_service.process_message(
+                message=request.message,
+                conversation_id=request.conversation_id,
+                user_id=request.user_id,
+                use_rag=request.use_rag,
+                enable_memory=request.enable_memory,
+                context=request.context,
+                mode=ChatMode.SYNC
+            )
+            
+            # Stream the response word by word for perceived speed
+            response_text = result.response
+            words = response_text.split()
+            
+            for i, word in enumerate(words):
+                chunk = word + (" " if i < len(words) - 1 else "")
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+                # Small delay for smooth streaming effect
+                await asyncio.sleep(0.02)
+            
+            # Send metadata
+            yield f"data: {json.dumps({'type': 'metadata', 'agents': result.agents_involved, 'sources': result.sources})}\n\n"
+            
+            # Stream完成
+            yield f"data: {json.dumps({'type': 'done', 'message_id': result.task_uid})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )
 
 

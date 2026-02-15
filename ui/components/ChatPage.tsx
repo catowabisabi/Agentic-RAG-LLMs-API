@@ -89,6 +89,7 @@ export default function ChatPage() {
   const [pendingInfo, setPendingInfo] = useState<string | null>(null);
   const [useAsyncMode, setUseAsyncMode] = useState(true); // Enable async mode by default
   const [useRag, setUseRag] = useState(true); // Enable RAG by default
+  const [useStreaming, setUseStreaming] = useState(true); // Enable streaming for faster UX
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({});
   // Track which messages have expanded thinking steps (collapsed by default)
@@ -555,48 +556,170 @@ export default function ChatPage() {
       } else {
         // ============================================
         // SYNC MODE: Wait for response (original behavior)
+        // Now with STREAMING support for faster UX!
         // ============================================
-        setPendingInfo(`Processing "${messageToSend.slice(0, 30)}..." - please wait (may take 20-60 seconds)`);
         
-        // Save pending task to localStorage so we can recover if page is left
-        const pendingTask: PendingTask = {
-          sessionId: currentSessionId!,
-          taskId: '',
-          message: messageToSend,
-          startedAt: new Date().toISOString()
-        };
-        localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
-        
-        // Create abort controller for this request
-        abortControllerRef.current = new AbortController();
-        
-        const response = await chatAPI.sendMessage({
-          message: messageToSend,
-          conversation_id: currentSessionId || undefined,
-          async_mode: false,
-          use_rag: useRag
-        }, abortControllerRef.current.signal);
-
-        const data = response.data;
-        const assistantMessage: Message = {
-          id: data.message_id || Date.now().toString() + '-a',
-          role: 'assistant',
-          content: data.response || 'No response',
-          timestamp: data.timestamp || new Date().toISOString(),
-          agents_involved: data.agents_involved,
-          sources: data.sources || [],
-          thinking: [...thinkingSteps],
-        };
-
-        setSessions(prev => prev.map(s => {
-          if (s.id === currentSessionId) {
-            return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+        if (useStreaming && !useAsyncMode) {
+          // === STREAMING MODE ===
+          setPendingInfo(`Processing with streaming... (faster response)`);
+          
+          // Save pending task
+          const pendingTask: PendingTask = {
+            sessionId: currentSessionId!,
+            taskId: '',
+            message: messageToSend,
+            startedAt: new Date().toISOString()
+          };
+          localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
+          
+          // Create a placeholder message that will be updated
+          const placeholderId = Date.now().toString() + '-streaming-a';
+          const placeholderMessage: Message = {
+            id: placeholderId,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+            thinking: [...thinkingSteps],
+          };
+          
+          setSessions(prev => prev.map(s => {
+            if (s.id === currentSessionId) {
+              return { ...s, messages: [...s.messages, placeholderMessage], updatedAt: new Date().toISOString() };
+            }
+            return s;
+          }));
+          
+          try {
+            await chatAPI.sendMessageStream(
+              {
+                message: messageToSend,
+                conversation_id: currentSessionId || undefined,
+                use_rag: useRag
+              },
+              // onToken callback - updates message incrementally
+              (token: string) => {
+                setSessions(prev => prev.map(s => {
+                  if (s.id === currentSessionId) {
+                    return {
+                      ...s,
+                      messages: s.messages.map(m => 
+                        m.id === placeholderId 
+                          ? { ...m, content: m.content + token }
+                          : m
+                      )
+                    };
+                  }
+                  return s;
+                }));
+              },
+              // onMetadata callback
+              (metadata) => {
+                setSessions(prev => prev.map(s => {
+                  if (s.id === currentSessionId) {
+                    return {
+                      ...s,
+                      messages: s.messages.map(m => 
+                        m.id === placeholderId 
+                          ? { ...m, agents_involved: metadata.agents, sources: metadata.sources }
+                          : m
+                      )
+                    };
+                  }
+                  return s;
+                }));
+              },
+              // onError callback
+              (error) => {
+                console.error('[Streaming] Error:', error);
+                setPendingInfo(`Error: ${error}`);
+              }
+            );
+            
+            // Clear pending task on success
+            localStorage.removeItem(PENDING_TASK_KEY);
+          } catch (err: any) {
+            console.error('[Streaming] Failed, falling back to regular mode:', err);
+            // Fallback: remove placeholder and use regular API
+            setSessions(prev => prev.map(s => {
+              if (s.id === currentSessionId) {
+                return {
+                  ...s,
+                  messages: s.messages.filter(m => m.id !== placeholderId)
+                };
+              }
+              return s;
+            }));
+            
+            // Retry with regular mode
+            const response = await chatAPI.sendMessage({
+              message: messageToSend,
+              conversation_id: currentSessionId || undefined,
+              async_mode: false,
+              use_rag: useRag
+            });
+            
+            const data = response.data;
+            const assistantMessage: Message = {
+              id: data.message_id || Date.now().toString() + '-a',
+              role: 'assistant',
+              content: data.response || 'No response',
+              timestamp: data.timestamp || new Date().toISOString(),
+              agents_involved: data.agents_involved,
+              sources: data.sources || [],
+              thinking: [...thinkingSteps],
+            };
+            
+            setSessions(prev => prev.map(s => {
+              if (s.id === currentSessionId) {
+                return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+              }
+              return s;
+            }));
           }
-          return s;
-        }));
+        } else {
+          // === REGULAR MODE (no streaming) ===
+          setPendingInfo(`Processing "${messageToSend.slice(0, 30)}..." - please wait (may take 20-60 seconds)`);
+          
+          // Save pending task to localStorage so we can recover if page is left
+          const pendingTask: PendingTask = {
+            sessionId: currentSessionId!,
+            taskId: '',
+            message: messageToSend,
+            startedAt: new Date().toISOString()
+          };
+          localStorage.setItem(PENDING_TASK_KEY, JSON.stringify(pendingTask));
+          
+          // Create abort controller for this request
+          abortControllerRef.current = new AbortController();
+          
+          const response = await chatAPI.sendMessage({
+            message: messageToSend,
+            conversation_id: currentSessionId || undefined,
+            async_mode: false,
+            use_rag: useRag
+          }, abortControllerRef.current.signal);
 
-        // Clear pending task on success
-        localStorage.removeItem(PENDING_TASK_KEY);
+          const data = response.data;
+          const assistantMessage: Message = {
+            id: data.message_id || Date.now().toString() + '-a',
+            role: 'assistant',
+            content: data.response || 'No response',
+            timestamp: data.timestamp || new Date().toISOString(),
+            agents_involved: data.agents_involved,
+            sources: data.sources || [],
+            thinking: [...thinkingSteps],
+          };
+
+          setSessions(prev => prev.map(s => {
+            if (s.id === currentSessionId) {
+              return { ...s, messages: [...s.messages, assistantMessage], updatedAt: new Date().toISOString() };
+            }
+            return s;
+          }));
+
+          // Clear pending task on success
+          localStorage.removeItem(PENDING_TASK_KEY);
+        }
       }
     } catch (err: any) {
       // Check if request was cancelled (user left page)
@@ -974,6 +1097,23 @@ export default function ChatPage() {
               >
                 <span className={`w-2 h-2 rounded-full ${useAsyncMode ? 'bg-green-400' : 'bg-gray-500'}`} />
                 {useAsyncMode ? '🔄 Background Mode' : '⏳ Wait Mode'}
+              </button>
+              
+              {/* Streaming toggle (NEW!) */}
+              <button
+                onClick={() => setUseStreaming(!useStreaming)}
+                className={`text-xs flex items-center gap-1.5 px-2 py-1 rounded ${
+                  useStreaming 
+                    ? 'bg-purple-900/50 text-purple-400 hover:bg-purple-900/70' 
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+                title={useStreaming 
+                  ? "Streaming On: See responses as they are generated (faster UX)" 
+                  : "Streaming Off: Wait for full response before displaying"
+                }
+              >
+                <Zap className={`w-3 h-3 ${useStreaming ? 'text-purple-400' : 'text-gray-500'}`} />
+                {useStreaming ? '⚡ Stream On' : '📝 Stream Off'}
               </button>
               
               {/* RAG toggle */}

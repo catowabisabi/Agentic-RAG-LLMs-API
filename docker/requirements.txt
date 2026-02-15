@@ -24,3 +24,6 @@ requests
 # Redis & Celery
 redis
 celery[redis]
+
+# Excel Operations
+openpyxl>=3.1.5
