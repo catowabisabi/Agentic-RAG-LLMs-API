@@ -353,6 +353,13 @@ Available Actions:
 4. calculate: Perform a calculation. Input: the calculation expression
 5. refine_query: Refine a previous search query that didn't work well. Input: improved query
 
+**CRITICAL INSTRUCTION FOR RAG:**
+- If you have found code, documentation, or specific data, **DO NOT just explain what you found**. 
+- Instead, **USE** the found information as a reference to construct the actual answer the user requested.
+- If the user asks for code, generate the code based on the found documentation.
+- If the user asks for a procedure, list the steps based on the found guide.
+- **Reference Mode**: Act as if you have the manual open in front of you and are performing the task. Do not summarize the manual unless asked to.
+
 **Metacognitive Self-Assessment:**
 Before deciding, ask yourself:
 - Do I have enough information to answer confidently?
