@@ -49,6 +49,17 @@ const EventCard = ({ event, compact }: { event: WSEvent; compact?: boolean }) =>
     }
   };
 
+  const formatAgent = (agent: any): string => {
+    if (!agent) return '';
+    if (typeof agent === 'string') return agent;
+    // Handle agent objects with {name, role, icon}
+    if (agent.name && agent.role) {
+      return `${agent.name} (${agent.role})`;
+    }
+    if (agent.name) return agent.name;
+    return String(agent);
+  };
+
   const formatContent = (data: any): string => {
     if (!data) return '';
     if (typeof data === 'string') return data;
@@ -69,7 +80,7 @@ const EventCard = ({ event, compact }: { event: WSEvent; compact?: boolean }) =>
       <div className={`border-l-2 px-2 py-1.5 text-xs ${getTypeColor(event.type)} rounded-r`}>
         <div className="flex items-center gap-1.5">
           <span>{getTypeIcon(event.type)}</span>
-          {event.agent && <span className="text-blue-400 font-medium truncate">{event.agent}</span>}
+          {event.agent && <span className="text-blue-400 font-medium truncate">{formatAgent(event.agent)}</span>}
           <span className="text-gray-500 ml-auto flex-shrink-0">{event.timestamp.toLocaleTimeString()}</span>
         </div>
         <p className="text-gray-400 mt-0.5 line-clamp-2">{formatContent(event.data)}</p>
@@ -85,7 +96,7 @@ const EventCard = ({ event, compact }: { event: WSEvent; compact?: boolean }) =>
         {event.agent && (
           <>
             <ArrowRight className="w-3 h-3 text-gray-600" />
-            <span className="text-xs text-blue-400">{event.agent}</span>
+            <span className="text-xs text-blue-400">{formatAgent(event.agent)}</span>
           </>
         )}
         <span className="text-xs text-gray-600 ml-auto">{event.timestamp.toLocaleTimeString()}</span>

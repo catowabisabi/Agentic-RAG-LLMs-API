@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 
 from pydantic import BaseModel, Field
 
+from config.config import Config
 from agents.shared_services.base_agent import BaseAgent
 from agents.shared_services.message_protocol import (
     AgentMessage,
@@ -68,6 +69,9 @@ class RAGAgent(BaseAgent):
             agent_role="RAG Specialist",
             agent_description="Handles document retrieval and RAG decisions"
         )
+        
+        # Load configuration
+        self.config = Config()
         
         # Load prompt configuration
         self.prompt_template = self.prompt_manager.get_prompt("rag_agent")

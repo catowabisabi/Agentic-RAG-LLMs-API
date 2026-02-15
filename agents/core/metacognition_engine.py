@@ -22,6 +22,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
 
 from services.llm_service import LLMService
 
