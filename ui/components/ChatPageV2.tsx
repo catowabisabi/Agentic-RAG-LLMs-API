@@ -391,7 +391,7 @@ export default function ChatPageV2() {
         wsRef.current = ws;
         
         ws.onopen = () => {
-          console.log('[ChatV2] WebSocket connected');
+          console.log('[ChatV2] ✅ WebSocket connected');
           setWsConnected(true);
 
           // Heartbeat - Keep connection alive
@@ -403,7 +403,10 @@ export default function ChatPageV2() {
            ws.addEventListener('close', () => clearInterval(pingInterval));
           
           // Re-subscribe to active session if we have one
+          // Note: This captures the activeSessionId at WebSocket creation time
+          // The separate useEffect will handle activeSessionId changes
           if (activeSessionId) {
+            console.log('[ChatV2] Re-subscribing to session after WS reconnect:', activeSessionId);
             subscribeToSession(activeSessionId);
           }
         };
@@ -481,7 +484,7 @@ export default function ChatPageV2() {
     
     // Handle subscription confirmation
     if (data.type === 'session_subscribed') {
-      console.log('[ChatV2] Subscribed to session:', data.session_id);
+      console.log('[ChatV2] ✅ Successfully subscribed to session:', data.session_id);
       setSubscribedSession(data.session_id);
       return;
     }
@@ -549,11 +552,27 @@ export default function ChatPageV2() {
         stepType = data.type.toUpperCase();
       }
       
-      // Skip empty or redundant content
-      if (!content || content.length < 3) return;
+      // 對於 PLANNING stage，即使 content 為空也要顯示，使用 default message
+      const isPlanning = data.stage?.toUpperCase() === 'PLANNING' || stepType === 'PLANNING';
+      if (!content || content.length < 3) {
+        if (isPlanning) {
+          content = "規劃中...";  // Planning 階段總是顯示
+        } else {
+          console.log('[ChatV2] Skipping empty event:', { type: data.type, stage: data.stage });
+          return;
+        }
+      }
       
-      // Log for debugging
-      console.log('[ChatV2] Processing event:', { type: data.type, stage: data.stage, agent: agentName, content: content.substring(0, 50) });
+      // Log for debugging - especially for planning events
+      console.log('[ChatV2] Processing event:', { 
+        type: data.type, 
+        stage: data.stage, 
+        stepType, 
+        agent: agentName, 
+        content: content.substring(0, 80),
+        session_id: data.session_id,
+        activeSessionId
+      });
       
       const step: ThinkingStep = {
         step_type: stepType,
@@ -569,7 +588,11 @@ export default function ChatPageV2() {
           s.step_type === step.step_type && 
           s.agent_name === step.agent_name
         );
-        if (isDupe) return prev;
+        if (isDupe) {
+          console.log('[ChatV2] Skipping duplicate event:', stepType);
+          return prev;
+        }
+        console.log('[ChatV2] Adding thinking step:', stepType, agentName);
         return [...prev, step].slice(-30);
       });
     }
@@ -582,10 +605,13 @@ export default function ChatPageV2() {
 
   const subscribeToSession = useCallback((sessionId: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('[ChatV2] Subscribing to session:', sessionId);
       wsRef.current.send(JSON.stringify({
         type: 'subscribe_session',
         session_id: sessionId
       }));
+    } else {
+      console.warn('[ChatV2] Cannot subscribe - WebSocket not open. State:', wsRef.current?.readyState);
     }
   }, []);
 
@@ -725,6 +751,9 @@ export default function ChatPageV2() {
   useEffect(() => {
     if (!activeSessionId || !isHydrated) return;
     
+    console.log('[ChatV2] Session changed to:', activeSessionId);
+    console.log('[ChatV2] WebSocket state:', wsRef.current?.readyState, 'OPEN=', WebSocket.OPEN);
+    
     // Subscribe to WebSocket for this session
     subscribeToSession(activeSessionId);
     
@@ -735,6 +764,17 @@ export default function ChatPageV2() {
     setThinkingSteps([]);
     
   }, [activeSessionId, isHydrated, subscribeToSession, loadSessionState]);
+
+  // Re-subscribe when WebSocket reconnects
+  useEffect(() => {
+    if (wsConnected && activeSessionId && isHydrated) {
+      console.log('[ChatV2] WebSocket reconnected, re-subscribing to:', activeSessionId);
+      // Small delay to ensure server is ready
+      setTimeout(() => {
+        subscribeToSession(activeSessionId);
+      }, 100);
+    }
+  }, [wsConnected, activeSessionId, isHydrated, subscribeToSession]);
 
   // ============== Initial Load ==============
 

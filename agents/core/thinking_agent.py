@@ -201,7 +201,7 @@ Brief analysis (2-3 sentences):"""
             temperature=0.4,
             session_id=self.agent_name
         )
-        return result.strip()
+        return result.content.strip()
     
     async def _step_decompose(self, query: str, analysis: str) -> List[str]:
         """Decompose into components"""
@@ -219,7 +219,7 @@ List 2-4 key components (one per line):"""
             session_id=self.agent_name
         )
         
-        lines = result.strip().split("\n")
+        lines = result.content.strip().split("\n")
         return [line.strip().lstrip("0123456789.-) ") for line in lines if line.strip()]
     
     async def _step_reason(self, component: str, context: str) -> str:
@@ -239,7 +239,7 @@ Your reasoning (2-4 sentences):"""
             temperature=0.4,
             session_id=self.agent_name
         )
-        return result.strip()
+        return result.content.strip()
     
     async def _step_conclude(self, query: str, reasonings: List[str], history_context: str = "") -> str:
         """Synthesize final conclusion"""
@@ -262,7 +262,7 @@ Provide a comprehensive, well-reasoned answer that takes into account the conver
             temperature=self.prompt_template.temperature,
             session_id=self.agent_name
         )
-        return result.strip()
+        return result.content.strip()
     
     async def _analyze(self, task: TaskAssignment) -> Dict[str, Any]:
         """Perform analysis on content"""

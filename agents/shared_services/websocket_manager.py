@@ -60,7 +60,11 @@ class WebSocketConnection:
             await self.websocket.send_json(data)
             self.last_activity = datetime.now()
         except Exception as e:
-            logger.error(f"Error sending JSON to {self.connection_id}: {e}")
+            # Use debug level for connection errors as they're expected during normal disconnects
+            if "close" in str(e).lower() or "disconnect" in str(e).lower():
+                logger.debug(f"Client {self.connection_id} disconnected during send: {e}")
+            else:
+                logger.error(f"Error sending JSON to {self.connection_id}: {e}")
             raise
 
 
@@ -149,7 +153,13 @@ class WebSocketManager:
         logger.info(f"Client connected: {client_id}")
         
         # Notify client of current agent statuses
-        await self._send_agent_status_update(connection)
+        try:
+            await self._send_agent_status_update(connection)
+        except Exception as e:
+            logger.warning(f"Failed to send initial status to {client_id}: {e}")
+            # Client probably disconnected during handshake, clean up
+            await self.disconnect_client(client_id)
+            raise
         
         return connection
     
@@ -301,7 +311,11 @@ class WebSocketManager:
             try:
                 await connection.send_json(data)
             except Exception as e:
-                logger.error(f"Error broadcasting to client {client_id}: {e}")
+                # Use debug level for connection errors as they're expected
+                if "close" in str(e).lower() or "disconnect" in str(e).lower():
+                    logger.debug(f"Client {client_id} disconnected during broadcast: {e}")
+                else:
+                    logger.warning(f"Error broadcasting to client {client_id}: {e}")
                 disconnected.append(client_id)
         
         # Clean up disconnected clients

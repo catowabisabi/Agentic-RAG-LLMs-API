@@ -432,13 +432,15 @@ Respond in JSON format:
     ]
 }}"""
         
-        # [NO FALLBACK] Errors propagate for testing visibility
+        # Call LLM with prompt (not prompt_key)
         result = await self.llm_service.generate(
-            prompt_key="planning_agent",
-            user_input=plan_prompt
+            prompt=plan_prompt,
+            system_message=self.prompt_template.system_prompt,
+            temperature=0.3,
+            session_id=self.agent_name
         )
         
-        content = result.get("content", "")
+        content = result.content  # Extract content from LLMResponse
         
         # Parse JSON
         import json

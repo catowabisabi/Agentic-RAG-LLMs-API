@@ -50,8 +50,17 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
 
-import chromadb
-from chromadb.config import Settings
+# Optional import for ChromaDB
+try:
+    import chromadb
+    from chromadb.config import Settings
+    HAS_CHROMADB = True
+except ImportError:
+    HAS_CHROMADB = False
+    chromadb = None
+    Settings = None
+    logger.warning("ChromaDB not installed. Vector database features will be disabled.")
+
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 try:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -119,14 +128,28 @@ class VectorDBManager:
         
         self._initialized = True
         
+        # Check if ChromaDB is available
+        if not HAS_CHROMADB:
+            logger.warning("ChromaDB not available. Vector database features disabled.")
+            self.base_path = Path(CHROMA_DB_PATH)
+            self._active_db = None
+            self._clients = {}
+            self._collections = {}
+            self._metadata = {}
+            self.metadata_file = None
+            self._llm = None
+            self._embeddings = None
+            self._text_splitter = None
+            return
+        
         # Base path for vector databases
         self.base_path = Path(CHROMA_DB_PATH)
         self.base_path.mkdir(parents=True, exist_ok=True)
         
         # Active database tracking
         self._active_db: Optional[str] = None
-        self._clients: Dict[str, chromadb.Client] = {}
-        self._collections: Dict[str, chromadb.Collection] = {}
+        self._clients: Dict[str, Any] = {}  # Changed from chromadb.Client to Any
+        self._collections: Dict[str, Any] = {}  # Changed from chromadb.Collection to Any
         
         # Database metadata storage
         self.metadata_file = self.base_path / "db_metadata.json"
@@ -156,6 +179,9 @@ class VectorDBManager:
     
     def _load_metadata(self) -> Dict[str, Any]:
         """Load database metadata from file"""
+        if not HAS_CHROMADB or not self.metadata_file:
+            return {}
+        
         if self.metadata_file.exists():
             with open(self.metadata_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -163,6 +189,9 @@ class VectorDBManager:
     
     def _save_metadata(self):
         """Save database metadata to file"""
+        if not HAS_CHROMADB or not self.metadata_file:
+            return
+        
         with open(self.metadata_file, 'w', encoding='utf-8') as f:
             json.dump(self._metadata, f, indent=2, default=str, ensure_ascii=False)
     
@@ -185,6 +214,9 @@ class VectorDBManager:
         Returns:
             Database info dict
         """
+        if not HAS_CHROMADB:
+            raise RuntimeError("ChromaDB is not installed. Please install chromadb to use vector database features.")
+        
         # Validate name
         safe_name = db_name.lower().replace(" ", "-").replace("_", "-")
         db_path = self.base_path / safe_name
@@ -566,6 +598,10 @@ Summary:"""
         Returns:
             Query results
         """
+        if not HAS_CHROMADB:
+            logger.warning("ChromaDB not available. Returning empty results.")
+            return {"results": [], "db_name": db_name or "none", "query": query}
+        
         # Validate n_results
         if n_results < 1:
             n_results = 1

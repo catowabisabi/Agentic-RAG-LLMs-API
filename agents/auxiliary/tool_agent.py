@@ -588,11 +588,13 @@ Available Tools:
 Return the name of the best tool, or 'none' if no tool is suitable."""
         
         result = await self.llm_service.generate(
-            prompt_key="tool_agent",
-            user_input=prompt
+            prompt=prompt,
+            system_message="You are a tool selection assistant. Respond with just the tool name.",
+            temperature=0.2,
+            session_id=self.agent_name
         )
         
-        selected_tool = result.get("content", "").strip().lower()
+        selected_tool = result.content.strip().lower()
         
         if selected_tool in self.tools:
             return {
@@ -604,7 +606,7 @@ Return the name of the best tool, or 'none' if no tool is suitable."""
             return {
                 "success": False,
                 "message": "No suitable tool found",
-                "suggestion": result.get("content", "")
+                "suggestion": result.content
             }
     
     async def _auto_execute(self, task: TaskAssignment) -> Dict[str, Any]:
@@ -631,14 +633,16 @@ Parameters Schema: {json.dumps(tool_def.parameters)}
 Return only valid JSON with the parameter values."""
         
         result = await self.llm_service.generate(
-            prompt_key="tool_agent",
-            user_input=prompt
+            prompt=prompt,
+            system_message="You are a parameter extraction assistant. Respond with valid JSON only.",
+            temperature=0.1,
+            session_id=self.agent_name
         )
         
         try:
-            parameters = json.loads(result.get("content", "{}"))
+            parameters = json.loads(result.content)
         except:
-            parameters = {"input": result.get("content", "")}
+            parameters = {"input": result.content}
         
         # Execute with the parameters
         task.input_data["tool_name"] = tool_name

@@ -43,10 +43,12 @@ class MyAgent(BaseAgent):
 =============================================================================
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, TYPE_CHECKING
 from datetime import datetime
 
 from .message_protocol import (
@@ -67,12 +69,19 @@ except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
 
+# Type-only imports for type hints
+if TYPE_CHECKING:
+    from services.llm_service import LLMService
+    from services.rag_service import RAGService
+    from services.broadcast_service import BroadcastService
+    from services.prompt_manager import PromptManager
+
 # Import new Service Layer
 try:
-    from services.llm_service import get_llm_service, LLMService
-    from services.rag_service import get_rag_service, RAGService
-    from services.broadcast_service import get_broadcast_service, BroadcastService
-    from services.prompt_manager import get_prompt_manager, PromptManager
+    from services.llm_service import get_llm_service
+    from services.rag_service import get_rag_service
+    from services.broadcast_service import get_broadcast_service
+    from services.prompt_manager import get_prompt_manager
     HAS_SERVICE_LAYER = True
 except ImportError:
     HAS_SERVICE_LAYER = False
@@ -105,10 +114,10 @@ class BaseAgent(ABC):
         agent_name: str,
         agent_role: str,
         agent_description: str = "",
-        llm_service: Optional[LLMService] = None,
-        rag_service: Optional[RAGService] = None,
-        broadcast_service: Optional[BroadcastService] = None,
-        prompt_manager: Optional[PromptManager] = None
+        llm_service: Optional["LLMService"] = None,
+        rag_service: Optional["RAGService"] = None,
+        broadcast_service: Optional["BroadcastService"] = None,
+        prompt_manager: Optional["PromptManager"] = None
     ):
         self.agent_name = agent_name
         self.agent_role = agent_role
