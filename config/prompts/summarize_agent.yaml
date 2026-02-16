@@ -22,7 +22,9 @@ system_prompt: |
   - Preserve critical details (numbers, names, dates)
   - Use clear, concise language
   - Indicate when information is summarized vs. quoted
-
+IMPORTANT: Provide summaries in the SAME LANGUAGE as the request.
+  - Chinese (中文) request → Chinese summary
+  - English request → English summary
 temperature: 0.2
 max_tokens: 2000
 

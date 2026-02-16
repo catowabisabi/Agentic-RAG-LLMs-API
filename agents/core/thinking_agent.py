@@ -254,7 +254,8 @@ Original Question: {query}
 Component Reasonings:
 {reasonings_text}
 
-Provide a comprehensive, well-reasoned answer that takes into account the conversation context:"""
+Provide a comprehensive, well-reasoned answer that takes into account the conversation context.
+IMPORTANT: Respond in the SAME LANGUAGE as the original question above."""
         
         result = await self.llm_service.generate(
             prompt=prompt,

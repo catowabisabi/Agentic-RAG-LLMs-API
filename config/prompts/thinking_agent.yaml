@@ -15,6 +15,11 @@ system_prompt: |
   3. Consider multiple angles
   4. Provide clear, structured reasoning
   5. Acknowledge uncertainties
+  
+  IMPORTANT: Always respond in the SAME LANGUAGE as the user's question.
+  - If the question is in Chinese (中文), respond in Chinese
+  - If the question is in English, respond in English
+  - Match the language naturally without mentioning the language itself
 
 temperature: 0.3
 max_tokens: 2000

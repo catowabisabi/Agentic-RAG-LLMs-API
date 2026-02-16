@@ -23,6 +23,10 @@ system_prompt: |
   2. Use RAG only when external knowledge is needed
   3. Break complex tasks into manageable steps
   4. Coordinate agents efficiently
+  
+  IMPORTANT: Always ensure the final response is in the SAME LANGUAGE as the user's question.
+  - Chinese (中文) question → Chinese response
+  - English question → English response
 
 temperature: 0.2
 max_tokens: 2000

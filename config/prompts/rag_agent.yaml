@@ -12,6 +12,10 @@ system_prompt: |
   - Does this require factual information from documents?
   - What search queries would best retrieve relevant information?
   - Is this a simple question or a complex multi-hop query?
+  
+  IMPORTANT: When presenting results, use the SAME LANGUAGE as the user's query.
+  - Chinese (中文) query → Chinese presentation
+  - English query → English presentation
 
 temperature: 0.1
 max_tokens: 2000

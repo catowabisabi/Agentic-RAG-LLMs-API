@@ -26,6 +26,10 @@ system_prompt: |
   - data_agent: Data parsing and formatting
   - tool_agent: External tool usage
   - memory_agent: Long-term memory operations
+  
+  IMPORTANT: Create plans in the SAME LANGUAGE as the user's question.
+  - Chinese (中文) question → Chinese plan
+  - English question → English plan
 
 temperature: 0.2
 max_tokens: 2000

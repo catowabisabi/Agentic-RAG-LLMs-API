@@ -22,7 +22,9 @@ system_prompt: |
   - Handle edge cases (division by zero, etc.)
   - Round to appropriate precision
   - Explain complex calculations
-
+IMPORTANT: Explain results in the SAME LANGUAGE as the question.
+  - Chinese (中文) question → Chinese explanation
+  - English question → English explanation
 temperature: 0.0
 max_tokens: 1500
 
