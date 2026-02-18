@@ -662,6 +662,151 @@ class CerebroMemory:
             cursor.execute("DELETE FROM observations WHERE id = ?", (observation_id,))
             return cursor.rowcount > 0
     
+    def update_observation(
+        self,
+        observation_id: str,
+        updates: Dict[str, Any]
+    ) -> Optional[Observation]:
+        """
+        Update an existing observation.
+        Allowed fields: title, subtitle, facts, narrative, concepts, importance, memory_type, confidence
+        """
+        # Verify exists
+        with self._cursor() as cursor:
+            cursor.execute("SELECT * FROM observations WHERE id = ?", (observation_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+        
+        # Build update query
+        allowed_fields = {
+            "title": "title",
+            "subtitle": "subtitle",
+            "narrative": "narrative",
+            "confidence": "confidence",
+        }
+        # JSON fields
+        json_fields = {"facts": "facts", "concepts": "concepts"}
+        # Enum fields
+        enum_fields = {"importance": "importance", "memory_type": "memory_type"}
+        
+        set_parts = []
+        params = []
+        
+        for key, col in allowed_fields.items():
+            if key in updates:
+                set_parts.append(f"{col} = ?")
+                params.append(updates[key])
+        
+        for key, col in json_fields.items():
+            if key in updates:
+                set_parts.append(f"{col} = ?")
+                params.append(json.dumps(updates[key]) if isinstance(updates[key], list) else updates[key])
+        
+        for key, col in enum_fields.items():
+            if key in updates:
+                val = updates[key]
+                if isinstance(val, str):
+                    set_parts.append(f"{col} = ?")
+                    params.append(val)
+        
+        if not set_parts:
+            return None
+        
+        set_parts.append("last_accessed = ?")
+        params.append(datetime.now().isoformat())
+        params.append(observation_id)
+        
+        with self._cursor() as cursor:
+            cursor.execute(f"UPDATE observations SET {', '.join(set_parts)} WHERE id = ?", params)
+        
+        # Return updated observation
+        return self._get_observation_by_id(observation_id)
+    
+    def _get_observation_by_id(self, observation_id: str) -> Optional[Observation]:
+        """Get a single observation by ID"""
+        with self._cursor() as cursor:
+            cursor.execute("SELECT * FROM observations WHERE id = ?", (observation_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return Observation(
+                id=row['id'],
+                user_id=row['user_id'],
+                session_id=row['session_id'],
+                memory_type=MemoryType(row['memory_type']),
+                importance=MemoryImportance(row['importance']),
+                title=row['title'],
+                subtitle=row['subtitle'],
+                facts=json.loads(row['facts']) if row['facts'] else [],
+                narrative=row['narrative'],
+                concepts=json.loads(row['concepts']) if row['concepts'] else [],
+                source_message=row['source_message'],
+                confidence=row['confidence'],
+                created_at=row['created_at'],
+                last_accessed=row['last_accessed'],
+                access_count=row['access_count'],
+                decay_factor=row['decay_factor']
+            )
+    
+    def get_all_observations_summary(self, user_id: str) -> Dict[str, Any]:
+        """Get a complete summary of all memories for a user (dashboard view)"""
+        with self._cursor() as cursor:
+            # Count by type
+            cursor.execute("""
+                SELECT memory_type, COUNT(*) as cnt FROM observations 
+                WHERE user_id = ? GROUP BY memory_type
+            """, (user_id,))
+            type_counts = {row['memory_type']: row['cnt'] for row in cursor.fetchall()}
+            
+            # Count by importance
+            cursor.execute("""
+                SELECT importance, COUNT(*) as cnt FROM observations 
+                WHERE user_id = ? GROUP BY importance
+            """, (user_id,))
+            importance_counts = {row['importance']: row['cnt'] for row in cursor.fetchall()}
+            
+            # Total count
+            cursor.execute("SELECT COUNT(*) as total FROM observations WHERE user_id = ?", (user_id,))
+            total = cursor.fetchone()['total']
+            
+            # All observations (sorted)
+            cursor.execute("""
+                SELECT * FROM observations WHERE user_id = ?
+                ORDER BY 
+                    CASE importance 
+                        WHEN 'critical' THEN 1 
+                        WHEN 'high' THEN 2 
+                        WHEN 'medium' THEN 3 
+                        WHEN 'low' THEN 4 
+                    END,
+                    created_at DESC
+            """, (user_id,))
+            
+            observations = []
+            for row in cursor.fetchall():
+                observations.append({
+                    "id": row['id'],
+                    "memory_type": row['memory_type'],
+                    "importance": row['importance'],
+                    "title": row['title'],
+                    "subtitle": row['subtitle'],
+                    "facts": json.loads(row['facts']) if row['facts'] else [],
+                    "narrative": row['narrative'],
+                    "concepts": json.loads(row['concepts']) if row['concepts'] else [],
+                    "confidence": row['confidence'],
+                    "created_at": row['created_at'],
+                    "access_count": row['access_count']
+                })
+        
+        return {
+            "user_id": user_id,
+            "total": total,
+            "by_type": type_counts,
+            "by_importance": importance_counts,
+            "observations": observations
+        }
+    
     # ============== Session Summary Operations ==============
     
     def store_session_summary(

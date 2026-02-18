@@ -45,6 +45,13 @@ try:
 except ImportError:
     HAS_UNIFIED_EVENTS = False
 
+# Import Debug Service
+try:
+    from services.agent_debug_service import get_debug_service
+    _debug = get_debug_service()
+except ImportError:
+    _debug = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,19 +216,31 @@ class ManagerAgent(BaseAgent):
         # if CasualChatAgent.is_casual_message(query):
         #     return QueryClassification(...)
         
+        # Fetch available knowledge bases to inform classification
+        available_kb_names = []
+        try:
+            from services.vectordb_manager import vectordb_manager
+            databases = vectordb_manager.list_databases()
+            available_kb_names = [db.get("name", "") for db in databases if db.get("name")]
+        except Exception as e:
+            logger.debug(f"Could not fetch knowledge bases for classification: {e}")
+        
+        kb_list_str = ", ".join(available_kb_names) if available_kb_names else "None"
+        
         # Use LLM for classification (the ONLY decision maker)
         classification_prompt = f"""You are a query router. Classify this user query into ONE category:
 
 1. casual_chat: Greetings, small talk, thanks, farewells, questions about AI capabilities
    Examples: "Hello", "Thanks!", "What can you do?", "你有什麼功能", "你有咩功能", "Who are you?"
    
-2. general_knowledge: General questions that an LLM can answer from training data (no RAG needed)
-   Examples: "What is VBA?", "Explain Python", "What is machine learning?", "How do I write a for loop?"
-   NOTE: Common knowledge, definitions, concepts, programming questions → general_knowledge
+2. general_knowledge: General questions that an LLM can answer from training data AND no relevant knowledge base exists
+   Examples: "What is machine learning?", "How do I write a for loop in Java?"
+   NOTE: Only use this if none of the available knowledge bases are relevant to the query topic
 
-3. knowledge_rag: Questions that specifically need to search the user's uploaded documents/knowledge bases
-   Examples: "What does my document say about X?", "Search my files for Y", "Based on the uploaded data..."
-   NOTE: Only use this if the user is clearly asking about THEIR OWN uploaded content
+3. knowledge_rag: Questions where we have a relevant knowledge base that can provide better/more specific answers
+   Examples: "What does my document say about X?", "Search my files for Y", "Write pinescript code" (if pinescript KB exists)
+   NOTE: If the query topic matches ANY available knowledge base below, classify as knowledge_rag to leverage that data
+   IMPORTANT: Even general programming/coding questions should use knowledge_rag if a matching knowledge base exists
 
 4. calculation: Math problems, data analysis, numerical computations
    Examples: "Calculate 15% of 200", "What is the sum of...", "Analyze these numbers"
@@ -238,6 +257,8 @@ class ManagerAgent(BaseAgent):
 8. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
    Examples: "Compare X and Y", "Create a plan for...", "Analyze and recommend..."
 
+Available knowledge bases: [{kb_list_str}]
+
 User query: "{query}"
 
 Respond with ONLY the category name and a brief reason.
@@ -246,6 +267,21 @@ Format: category|reason"""
         # [NO FALLBACK] Errors propagate for testing visibility
         result = await self.llm_service.generate(prompt=classification_prompt, temperature=0.1)
         response = result.content if hasattr(result, 'content') else str(result)
+        
+        # Debug trace: record classification LLM call
+        if _debug:
+            _debug.record_llm_request(
+                agent_name="manager_agent",
+                task_id=task_id,
+                prompt=f"[Classification] KB list: [{kb_list_str[:200]}...] Query: {query[:200]}",
+                session_id=""
+            )
+            _debug.record_llm_response(
+                agent_name="manager_agent",
+                task_id=task_id,
+                response=response,
+                session_id=""
+            )
         
         # Parse response
         parts = response.strip().split("|", 1)
@@ -446,6 +482,19 @@ Format: category|reason"""
         if handler:
             logger.info(f"[Manager] Handler-based routing: {handler} (intent: {intent}, matched_by: {matched_by})")
             
+            # Debug trace: record routing decision
+            if _debug:
+                _debug.record_routing(
+                    task_id=task_id,
+                    classification={
+                        "route": "handler_based",
+                        "handler": handler,
+                        "intent": intent,
+                        "matched_by": matched_by
+                    },
+                    session_id=session_id or ""
+                )
+            
             # Emit start event
             if HAS_EVENT_BUS and event_bus:
                 await event_bus.update_status(
@@ -503,6 +552,18 @@ Format: category|reason"""
         # Step 1: Classify the query
         classification = await self._classify_query(query, task_id)
         logger.info(f"[Manager] Query classified as: {classification.query_type} ({classification.reasoning})")
+        
+        # Debug trace: record classification result
+        if _debug:
+            _debug.record_routing(
+                task_id=task_id,
+                classification={
+                    "query_type": classification.query_type,
+                    "reasoning": classification.reasoning,
+                    "confidence": classification.confidence
+                },
+                session_id=session_id or ""
+            )
         
         await self._broadcast_thinking(session_id, {
             "status": f"Query type: {classification.query_type}",
@@ -565,9 +626,29 @@ Format: category|reason"""
             if history_parts:
                 history_context = "Previous conversation:\n" + "\n".join(history_parts) + "\n\n"
         
+        # Memory injection - get user context from Cerebro
+        memory_context = ""
+        user_id = task.input_data.get("user_id", "default")
+        try:
+            from services.cerebro_memory import get_cerebro
+            cerebro = get_cerebro()
+            memory_context = cerebro.get_context_for_prompt(user_id, query)
+            if memory_context and _debug:
+                _debug.record_memory_injection(
+                    agent_name="manager_agent",
+                    task_id=task_id,
+                    memory_context=memory_context,
+                    session_id=session_id or ""
+                )
+        except Exception as e:
+            logger.debug(f"Memory injection skipped: {e}")
+        
         # Direct LLM call for general knowledge
         # Modified: 2026-02-06 - 移除 user_context（可能包含跨 session 的 RAG 內容）
+        # Modified: 2026-02-17 - 加入 memory_context 注入
         prompt = f"""You are a helpful AI assistant. Answer this question clearly and informatively.
+
+{memory_context}
 
 {history_context}
 Question: {query}
@@ -576,10 +657,29 @@ Guidelines:
 - Provide a clear, accurate answer
 - Match the language of the question (if asked in Chinese, respond in Chinese)
 - Be concise but informative
-- If it's a greeting (like "Hello"), just respond naturally with a greeting"""
+- If it's a greeting (like "Hello"), just respond naturally with a greeting
+- Respect any user preferences mentioned in the context above"""
+        
+        # Debug trace: record LLM call
+        if _debug:
+            _debug.record_agent_input(
+                agent_name="manager_agent",
+                task_id=task_id,
+                input_data={"query": query, "workflow": "general_knowledge"},
+                session_id=session_id or ""
+            )
         
         llm_result = await self.llm_service.generate(prompt=prompt)
         response_text = llm_result.content if hasattr(llm_result, 'content') else str(llm_result)
+        
+        # Debug trace: record output
+        if _debug:
+            _debug.record_agent_output(
+                agent_name="manager_agent",
+                task_id=task_id,
+                output_data={"response": response_text[:500], "workflow": "general_knowledge"},
+                session_id=session_id or ""
+            )
         
         await self.ws_manager.broadcast_agent_activity({
             "type": "task_completed",
@@ -835,6 +935,33 @@ Guidelines:
         except Exception as e:
             logger.warning(f"Memory integration failed: {e}")
             memory_context = ""
+        
+        # Also inject Cerebro personal memory
+        try:
+            from services.cerebro_memory import get_cerebro
+            cerebro = get_cerebro()
+            cerebro_context = cerebro.get_context_for_prompt(user_id, query)
+            if cerebro_context:
+                memory_context = cerebro_context + "\n\n" + memory_context
+                if _debug:
+                    _debug.record_memory_injection(
+                        agent_name="manager_agent",
+                        task_id=task_id,
+                        memory_context=cerebro_context,
+                        session_id=session_id
+                    )
+        except Exception as e:
+            logger.debug(f"Cerebro memory injection skipped: {e}")
+        
+        # Debug trace: record RAG agent input
+        if _debug:
+            _debug.record_agent_input(
+                agent_name="rag_agent",
+                task_id=task_id,
+                input_data={"query": query, "workflow": "agentic_rag", "has_memory": bool(memory_context)},
+                session_id=session_id,
+                source="manager_agent"
+            )
         
         logger.info("[Manager] → Starting Agentic RAG with ReAct Loop...")
         
@@ -1286,13 +1413,40 @@ Guidelines:
             # Get chat history from task input
             chat_history = task.input_data.get("chat_history", [])
             
+            # Memory injection for complex queries
+            memory_context = ""
+            user_id = task.input_data.get("user_id", "default")
+            try:
+                from services.cerebro_memory import get_cerebro
+                cerebro = get_cerebro()
+                memory_context = cerebro.get_context_for_prompt(user_id, query)
+                if memory_context:
+                    logger.info(f"[Manager] Injecting memory context into complex query ({len(memory_context)} chars)")
+                    try:
+                        debug_svc = get_debug_service()
+                        debug_svc.record_memory_injection(
+                            agent_name=self.agent_name,
+                            task_id=task_id,
+                            memory_context=memory_context,
+                            query=query
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"[Manager] Memory injection skipped for complex query: {e}")
+            
+            # Combine RAG context with memory context
+            combined_context = rag_context
+            if memory_context:
+                combined_context = f"{rag_context}\n\n{memory_context}" if rag_context else memory_context
+            
             thinking_task = TaskAssignment(
                 task_id=task_id,
                 task_type="deep_thinking",
                 description=query,
                 input_data={
                     "query": query,
-                    "rag_context": rag_context,
+                    "rag_context": combined_context,
                     "sources": sources,
                     "chat_history": chat_history  # Pass conversation history
                 }

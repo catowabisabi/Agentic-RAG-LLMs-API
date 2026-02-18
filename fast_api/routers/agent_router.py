@@ -6,6 +6,7 @@ REST API endpoints for agent management:
 - Get agent status
 - Send tasks to agents
 - Activity history (via EventBus)
+- Debug traces (via AgentDebugService)
 - Custom agent CRUD (SQLite-backed)
 """
 
@@ -34,6 +35,13 @@ try:
 except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
+
+# Import Debug Service
+try:
+    from services.agent_debug_service import get_debug_service
+    _debug = get_debug_service()
+except ImportError:
+    _debug = None
 
 logger = logging.getLogger(__name__)
 
@@ -535,3 +543,81 @@ async def delete_custom_agent(agent_name: str):
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Custom agent '{agent_name}' not found")
     return {"success": True, "agent_name": agent_name, "message": f"Custom agent '{agent_name}' deleted"}
+
+
+# ============== Debug Trace Endpoints ==============
+
+@router.get("/debug/traces")
+async def get_debug_traces(
+    session_id: str = None,
+    task_id: str = None,
+    agent_name: str = None,
+    trace_type: str = None,
+    limit: int = 100
+):
+    """
+    Get agent debug traces. Filter by session, task, agent, or type.
+    trace_type: agent_input, agent_output, llm_request, llm_response, routing, thinking, error, memory_injection
+    """
+    if not _debug:
+        return {"error": "Debug service not available", "traces": []}
+    
+    traces = _debug.get_traces(
+        session_id=session_id,
+        task_id=task_id,
+        agent_name=agent_name,
+        trace_type=trace_type,
+        limit=limit
+    )
+    return {
+        "count": len(traces),
+        "filters": {"session_id": session_id, "task_id": task_id, "agent_name": agent_name, "trace_type": trace_type},
+        "traces": traces
+    }
+
+
+@router.get("/debug/traces/recent")
+async def get_recent_traces(limit: int = 50):
+    """Get the most recent debug traces"""
+    if not _debug:
+        return {"error": "Debug service not available", "traces": []}
+    
+    traces = _debug.get_recent(limit)
+    return {
+        "count": len(traces),
+        "traces": traces
+    }
+
+
+@router.get("/debug/task/{task_id}/flow")
+async def get_task_flow(task_id: str):
+    """
+    Get the complete message flow for a specific task.
+    Shows: routing decision → agent input → LLM requests → LLM responses → agent output
+    """
+    if not _debug:
+        return {"error": "Debug service not available"}
+    
+    return _debug.get_task_flow(task_id)
+
+
+@router.get("/debug/session/{session_id}/flow")
+async def get_session_flow(session_id: str):
+    """
+    Get all traces for a session, grouped by task.
+    Shows the full conversation flow with all agent interactions.
+    """
+    if not _debug:
+        return {"error": "Debug service not available"}
+    
+    return _debug.get_session_flow(session_id)
+
+
+@router.delete("/debug/traces")
+async def clear_debug_traces():
+    """Clear all debug traces"""
+    if not _debug:
+        return {"error": "Debug service not available"}
+    
+    _debug.clear()
+    return {"success": True, "message": "All traces cleared"}

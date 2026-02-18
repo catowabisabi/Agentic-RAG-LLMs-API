@@ -485,6 +485,215 @@ async def list_databases():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============== Knowledge Base Skills ==============
+# NOTE: These fixed-path routes MUST come before /databases/{db_name}
+
+class UpdateSkillsRequest(BaseModel):
+    """Request to update KB skills metadata"""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+
+
+@router.get("/databases/skills")
+async def get_all_skills():
+    """Get skills summary for all knowledge bases (for routing/display)"""
+    try:
+        skills = vectordb_manager.get_skills_summary()
+        return {
+            "success": True,
+            "skills": skills,
+            "count": len(skills)
+        }
+    except Exception as e:
+        logger.error(f"Get skills error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/skills/generate-all")
+async def generate_all_skills():
+    """Use LLM to generate skills metadata for ALL databases"""
+    try:
+        results = await vectordb_manager.generate_all_skills()
+        return {
+            "success": True,
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Generate all skills error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Smart Ingestion ==============
+
+class SmartInsertRequest(BaseModel):
+    """Request for smart content insertion with auto-routing"""
+    content: str = Field(description="Document content")
+    title: str = Field(default="", description="Document title")
+    source: str = Field(default="", description="Document source")
+    category: str = Field(default="", description="Document category")
+    tags: List[str] = Field(default_factory=list, description="Document tags")
+    summarize: bool = Field(default=True, description="Summarize before insertion")
+    auto_create: bool = Field(default=True, description="Auto-create new DB if needed")
+
+
+@router.post("/databases/smart-insert")
+async def smart_insert_document(request: SmartInsertRequest):
+    """Smart insert: LLM decides which database to add content to"""
+    try:
+        result = await vectordb_manager.smart_insert(
+            content=request.content,
+            title=request.title,
+            source=request.source,
+            category=request.category,
+            tags=request.tags,
+            summarize=request.summarize,
+            auto_create=request.auto_create
+        )
+        return {
+            "success": True,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Smart insert error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/smart-upload")
+async def smart_upload_document(
+    file: UploadFile = File(...),
+    title: str = Form(default=""),
+    category: str = Form(default=""),
+    summarize: bool = Form(default=True),
+    auto_create: bool = Form(default=True)
+):
+    """Smart upload: LLM decides which database to add uploaded file to"""
+    try:
+        content = await file.read()
+        content_str = content.decode("utf-8")
+        filename = file.filename or "unknown"
+        
+        result = await vectordb_manager.smart_insert(
+            content=content_str,
+            title=title or filename,
+            source=filename,
+            filename=filename,
+            category=category,
+            tags=[filename.split(".")[-1]] if "." in filename else [],
+            summarize=summarize,
+            auto_create=auto_create
+        )
+        return {
+            "success": True,
+            "filename": filename,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Smart upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/suggest-target")
+async def suggest_target_database(
+    content: str = Form(...),
+    title: str = Form(default=""),
+    filename: str = Form(default="")
+):
+    """Preview which database LLM would route content to (without inserting)"""
+    try:
+        suggestion = await vectordb_manager.suggest_database_for_content(content, title, filename)
+        return {
+            "success": True,
+            "suggestion": suggestion
+        }
+    except Exception as e:
+        logger.error(f"Suggest target error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Backup & Consolidation ==============
+
+@router.post("/databases/backup")
+async def create_backup():
+    """Create a zip backup of all databases"""
+    try:
+        result = vectordb_manager.create_backup()
+        return {
+            "success": True,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Backup error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/databases/backups")
+async def list_backups():
+    """List all available backups"""
+    try:
+        backups = vectordb_manager.list_backups()
+        return {
+            "success": True,
+            "backups": backups,
+            "count": len(backups)
+        }
+    except Exception as e:
+        logger.error(f"List backups error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/restore/{backup_filename}")
+async def restore_backup(backup_filename: str):
+    """Restore from a backup. Creates a safety backup first."""
+    try:
+        result = vectordb_manager.restore_backup(backup_filename)
+        return {
+            "success": True,
+            **result
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Restore error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/consolidate")
+async def consolidate_databases():
+    """LLM-guided database consolidation. Backs up first, then merges related DBs."""
+    try:
+        result = await vectordb_manager.consolidate_databases()
+        return {
+            "success": True,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Consolidation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/databases/backup/download/{backup_filename}")
+async def download_backup(backup_filename: str):
+    """Download a backup file"""
+    from fastapi.responses import FileResponse
+    
+    backup_dir = vectordb_manager._get_backup_dir()
+    backup_path = backup_dir / backup_filename
+    
+    if not backup_path.exists():
+        raise HTTPException(status_code=404, detail=f"Backup file not found: {backup_filename}")
+    
+    return FileResponse(
+        path=str(backup_path),
+        filename=backup_filename,
+        media_type="application/zip"
+    )
+
+
+# ============== Database CRUD (parameterized routes AFTER fixed paths) ==============
+
 @router.get("/databases/{db_name}")
 async def get_database_info(db_name: str):
     """Get information about a specific database"""
@@ -731,3 +940,64 @@ async def delete_document(db_name: str, doc_id: str):
     except Exception as e:
         logger.error(f"Delete document error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Per-Database Skills (parameterized routes) ==============
+
+@router.get("/databases/{db_name}/skills")
+async def get_database_skills(db_name: str):
+    """Get skills metadata for a specific database"""
+    try:
+        info = vectordb_manager.get_database_info(db_name)
+        if not info:
+            raise HTTPException(status_code=404, detail=f"Database '{db_name}' not found")
+        
+        skills = info.get("skills", vectordb_manager._generate_default_skills(db_name, info))
+        return {
+            "success": True,
+            "database": db_name,
+            "skills": skills
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get DB skills error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/databases/{db_name}/skills")
+async def update_database_skills(db_name: str, request: UpdateSkillsRequest):
+    """Manually update skills metadata for a database"""
+    try:
+        skills = request.dict(exclude_none=True)
+        skills["auto_generated"] = False
+        skills["updated_at"] = datetime.now().isoformat()
+        result = vectordb_manager.update_database_skills(db_name, skills)
+        return {
+            "success": True,
+            "database": db_name,
+            "skills": result.get("skills")
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Update skills error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/databases/{db_name}/skills/generate")
+async def generate_database_skills(db_name: str):
+    """Use LLM to auto-generate skills metadata by sampling DB content"""
+    try:
+        skills = await vectordb_manager.generate_skills_with_llm(db_name)
+        return {
+            "success": True,
+            "database": db_name,
+            "skills": skills
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Generate skills error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

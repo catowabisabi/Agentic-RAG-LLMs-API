@@ -193,6 +193,16 @@ User: "What can you do?"
         
         start_time = datetime.now()
         
+        # Memory injection for personalization
+        memory_context = ""
+        user_id = task.input_data.get("user_id", "default")
+        try:
+            from services.cerebro_memory import get_cerebro
+            cerebro = get_cerebro()
+            memory_context = cerebro.get_context_for_prompt(user_id, message)
+        except Exception as e:
+            logger.debug(f"Memory injection skipped: {e}")
+        
         # Emit start event
         if HAS_EVENT_BUS and event_bus:
             await event_bus.update_status(
@@ -210,10 +220,16 @@ User: "What can you do?"
         
         try:
             # Generate response using Service Layer
+            # Inject memory context for personalization
+            system_with_memory = self.system_prompt
+            if memory_context:
+                system_with_memory = f"{self.system_prompt}\n\n{memory_context}"
+                logger.info(f"[CasualChat] Injected memory context ({len(memory_context)} chars)")
+            
             user_message = f"{history_context}{message}"
             response = await self.llm_service.generate(
                 prompt=user_message,
-                system_message=self.system_prompt,
+                system_message=system_with_memory,
                 temperature=0.7
             )
             response_text = response.content

@@ -349,3 +349,103 @@ async def list_memory_types():
             {"value": "low", "description": "Archive, rarely inject"}
         ]
     }
+
+
+# ============== Update Memory ==============
+
+class UpdateObservationRequest(BaseModel):
+    """Request to update an existing observation"""
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    facts: Optional[List[str]] = None
+    narrative: Optional[str] = None
+    concepts: Optional[List[str]] = None
+    importance: Optional[str] = None
+    memory_type: Optional[str] = None
+    confidence: Optional[float] = None
+
+
+@router.put("/observations/{observation_id}")
+async def update_observation(observation_id: str, request: UpdateObservationRequest):
+    """Update an existing memory/observation"""
+    try:
+        cerebro = get_cerebro()
+        updates = {k: v for k, v in request.dict().items() if v is not None}
+        
+        if not updates:
+            return {"success": True, "message": "No updates provided"}
+        
+        result = cerebro.update_observation(observation_id, updates)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Observation {observation_id} not found")
+        
+        return {
+            "success": True,
+            "observation": obs_to_response(result)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating observation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Memory Dashboard ==============
+
+@router.get("/dashboard/{user_id}")
+async def get_memory_dashboard(user_id: str):
+    """
+    Get complete memory dashboard for a user.
+    Shows: profile + all observations (grouped by type/importance) + stats.
+    This is the 'what does the model remember about me' view.
+    """
+    try:
+        cerebro = get_cerebro()
+        
+        # Get profile
+        profile = cerebro.get_or_create_user(user_id)
+        
+        # Get all observations summary
+        obs_summary = cerebro.get_all_observations_summary(user_id)
+        
+        # Get current prompt context (what's actually injected)
+        prompt_context = cerebro.get_context_for_prompt(user_id)
+        
+        return {
+            "user_id": user_id,
+            "profile": profile_to_response(profile),
+            "memory_stats": {
+                "total_observations": obs_summary["total"],
+                "by_type": obs_summary["by_type"],
+                "by_importance": obs_summary["by_importance"]
+            },
+            "observations": obs_summary["observations"],
+            "prompt_context": {
+                "length": len(prompt_context),
+                "content": prompt_context,
+                "description": "This is what gets injected into every agent prompt"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting memory dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/observations/all/{user_id}")
+async def delete_all_observations(user_id: str):
+    """Delete ALL observations for a user (dangerous!)"""
+    try:
+        cerebro = get_cerebro()
+        with cerebro._cursor() as cursor:
+            cursor.execute("DELETE FROM observations WHERE user_id = ?", (user_id,))
+            deleted = cursor.rowcount
+            cursor.execute("UPDATE user_profiles SET observation_count = 0 WHERE user_id = ?", (user_id,))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "deleted_count": deleted
+        }
+    except Exception as e:
+        logger.error(f"Error deleting all observations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
