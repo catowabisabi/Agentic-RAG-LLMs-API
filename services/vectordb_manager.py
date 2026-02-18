@@ -52,6 +52,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 # Optional import for ChromaDB
 try:
     import chromadb
@@ -100,8 +102,6 @@ CHROMA_DB_PATH = _config.CHROMA_DB_PATH
 OPENAI_API_KEY = _config.OPENAI_API_KEY
 EMBEDDING_MODEL = _config.EMBEDDING_MODEL
 DEFAULT_MODEL = _config.DEFAULT_MODEL
-
-logger = logging.getLogger(__name__)
 
 
 class VectorDBManager:

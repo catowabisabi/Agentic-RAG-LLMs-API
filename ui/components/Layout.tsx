@@ -12,7 +12,8 @@ import {
   Activity,
   Settings,
   LogOut,
-  Bot
+  Bot,
+  Brain
 } from 'lucide-react';
 
 const navItems = [
@@ -20,6 +21,7 @@ const navItems = [
   { name: 'Agents', href: '/agents', icon: Users },
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'RAG Query', href: '/rag', icon: Database },
+  { name: 'Memory', href: '/memory', icon: Brain },
   { name: 'WebSocket', href: '/websocket', icon: Activity },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

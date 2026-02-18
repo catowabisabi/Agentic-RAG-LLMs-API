@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Database, Search, FileText, Plus, Trash2, RefreshCw,
-  ChevronDown, ChevronUp, Eye, FolderOpen, Zap, Upload, X
+  ChevronDown, ChevronUp, Eye, FolderOpen, Zap, Upload, X,
+  BookOpen, HardDrive, Download, RotateCcw, Merge, Sparkles, Edit3, Save
 } from 'lucide-react';
 import { ragAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -15,7 +16,7 @@ interface DatabaseInfo { name: string; description?: string; document_count?: nu
 
 export default function RAGPage() {
   const { isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<'smart' | 'databases' | 'documents' | 'query' | 'add'>('smart');
+  const [activeTab, setActiveTab] = useState<'smart' | 'databases' | 'documents' | 'query' | 'add' | 'skills' | 'backup'>('smart');
   const [queryText, setQueryText] = useState('');
   const [collection, setCollection] = useState('default');
   const [topK, setTopK] = useState(5);
@@ -45,6 +46,21 @@ export default function RAGPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadResults, setUploadResults] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // KB Skills state
+  const [skills, setSkills] = useState<Record<string, any>>({});
+  const [loadingSkills, setLoadingSkills] = useState(false);
+  const [generatingSkills, setGeneratingSkills] = useState(false);
+  const [editingSkill, setEditingSkill] = useState<string | null>(null);
+
+  // Backup state
+  const [backups, setBackups] = useState<any[]>([]);
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState<string | null>(null);
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateResult, setConsolidateResult] = useState<any>(null);
+  const [backupResult, setBackupResult] = useState<any>(null);
 
   useEffect(() => { fetchDatabases(); }, []);
 
@@ -130,6 +146,70 @@ export default function RAGPage() {
     setUploadFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // ===== KB Skills Handlers =====
+  const fetchSkills = async () => {
+    setLoadingSkills(true);
+    try {
+      const response = await ragAPI.getAllSkills();
+      setSkills(response.data.skills || {});
+    } catch (err) { console.error('Failed to fetch skills:', err); }
+    setLoadingSkills(false);
+  };
+
+  const handleGenerateAllSkills = async () => {
+    if (!confirm('Use LLM to generate skills metadata for all databases? This may take a moment.')) return;
+    setGeneratingSkills(true);
+    try {
+      const response = await ragAPI.generateAllSkills();
+      if (response.data.success) {
+        await fetchSkills();
+      }
+    } catch (err) { console.error('Failed to generate skills:', err); }
+    setGeneratingSkills(false);
+  };
+
+  // ===== Backup Handlers =====
+  const fetchBackups = async () => {
+    setLoadingBackups(true);
+    try {
+      const response = await ragAPI.listBackups();
+      setBackups(response.data.backups || []);
+    } catch (err) { console.error('Failed to fetch backups:', err); }
+    setLoadingBackups(false);
+  };
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true); setBackupResult(null);
+    try {
+      const response = await ragAPI.createBackup();
+      setBackupResult(response.data);
+      await fetchBackups();
+    } catch (err: any) { setBackupResult({ error: err.response?.data?.detail || err.message }); }
+    setCreatingBackup(false);
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    if (!confirm(`Restore from backup "${filename}"? A safety backup will be created first.`)) return;
+    setRestoringBackup(filename);
+    try {
+      const response = await ragAPI.restoreBackup(filename);
+      alert(`Restore successful! ${response.data.message || ''}`);
+      await fetchDatabases();
+    } catch (err: any) { alert(`Restore failed: ${err.response?.data?.detail || err.message}`); }
+    setRestoringBackup(null);
+  };
+
+  const handleConsolidate = async () => {
+    if (!confirm('Run LLM-guided database consolidation? A backup will be created first.')) return;
+    setConsolidating(true); setConsolidateResult(null);
+    try {
+      const response = await ragAPI.consolidateDatabases();
+      setConsolidateResult(response.data);
+      await fetchDatabases();
+    } catch (err: any) { setConsolidateResult({ error: err.response?.data?.detail || err.message }); }
+    setConsolidating(false);
+  };
+
   const handleUploadFiles = async () => {
     if (uploadFiles.length === 0 || !selectedDb) return;
     setUploading(true); setUploadResults([]);
@@ -188,6 +268,12 @@ export default function RAGPage() {
         </button>
         <button onClick={() => setActiveTab('add')} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'add' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
           <Plus className="w-4 h-4" />Add Document
+        </button>
+        <button onClick={() => { setActiveTab('skills'); fetchSkills(); }} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'skills' ? 'bg-purple-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <BookOpen className="w-4 h-4" />KB Skills
+        </button>
+        <button onClick={() => { setActiveTab('backup'); fetchBackups(); }} className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${activeTab === 'backup' ? 'bg-amber-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+          <HardDrive className="w-4 h-4" />Backup & Consolidate
         </button>
       </div>
 
@@ -373,6 +459,190 @@ export default function RAGPage() {
               </div>
               <button onClick={handleAddDocument} disabled={!docContent.trim() || !selectedDb || adding || !isAdmin} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-lg text-white">{adding ? <><div className="loading-spinner" />Adding...</> : <><Plus className="w-4 h-4" />Add Document</>}</button>
               {addResult && <div className={`p-4 rounded-lg ${addResult.error ? 'bg-red-900/50 border border-red-700' : 'bg-green-900/50 border border-green-700'}`}><pre className="text-sm overflow-auto text-white">{JSON.stringify(addResult, null, 2)}</pre></div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== KB Skills Tab ===== */}
+      {activeTab === 'skills' && (
+        <div className="space-y-6">
+          {/* Header + Generate All Button */}
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                  <BookOpen className="w-5 h-5 text-purple-400" />Knowledge Base Skills
+                </h2>
+                <p className="text-gray-400 text-sm mt-1">Each database's capabilities, topics, and descriptions — used for smart routing</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={fetchSkills} disabled={loadingSkills} className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white">
+                  <RefreshCw className={`w-4 h-4 ${loadingSkills ? 'animate-spin' : ''}`} />Refresh
+                </button>
+                <button onClick={handleGenerateAllSkills} disabled={generatingSkills || !isAdmin} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 rounded-lg text-white">
+                  {generatingSkills ? <><RefreshCw className="w-4 h-4 animate-spin" />Generating...</> : <><Sparkles className="w-4 h-4" />Auto-Generate All</>}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Skills Cards Grid */}
+          {loadingSkills ? (
+            <div className="flex justify-center py-12"><div className="loading-spinner" /></div>
+          ) : Object.keys(skills).length === 0 ? (
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-12 text-center">
+              <BookOpen className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+              <p className="text-gray-400 text-lg">No skills metadata found</p>
+              <p className="text-gray-500 text-sm mt-2">Click "Auto-Generate All" to create skills using LLM</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {Object.entries(skills).map(([dbName, skill]: [string, any]) => (
+                <div key={dbName} className="bg-gray-800 rounded-xl border border-gray-700 p-5 hover:border-purple-600/50 transition-colors">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-purple-600/20 rounded-lg flex items-center justify-center">
+                        <Database className="w-5 h-5 text-purple-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-white font-semibold">{dbName}</h3>
+                        <span className="text-xs text-gray-500">{skill.document_count ?? '?'} docs</span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Description */}
+                  <p className="text-gray-300 text-sm mb-3 leading-relaxed">{skill.description || 'No description'}</p>
+                  
+                  {/* Keywords */}
+                  {skill.keywords && skill.keywords.length > 0 && (
+                    <div className="mb-3">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Keywords</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {skill.keywords.map((kw: string, i: number) => (
+                          <span key={i} className="px-2 py-0.5 bg-purple-900/40 text-purple-300 text-xs rounded-full">{kw}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Topics */}
+                  {skill.topics && skill.topics.length > 0 && (
+                    <div className="mb-3">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Topics</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {skill.topics.map((t: string, i: number) => (
+                          <span key={i} className="px-2 py-0.5 bg-blue-900/40 text-blue-300 text-xs rounded-full">{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Category */}
+                  {skill.category && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-xs text-gray-500">Category:</span>
+                      <span className="px-2 py-0.5 bg-gray-700 text-gray-300 text-xs rounded">{skill.category}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== Backup & Consolidation Tab ===== */}
+      {activeTab === 'backup' && (
+        <div className="space-y-6">
+          {/* Backup Actions */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Create Backup */}
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+              <h2 className="text-xl font-semibold text-white mb-2 flex items-center gap-2">
+                <HardDrive className="w-5 h-5 text-amber-400" />Create Backup
+              </h2>
+              <p className="text-gray-400 text-sm mb-4">Create a zip archive of all databases</p>
+              <button onClick={handleCreateBackup} disabled={creatingBackup || !isAdmin} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 rounded-lg text-white font-medium">
+                {creatingBackup ? <><RefreshCw className="w-4 h-4 animate-spin" />Creating backup...</> : <><HardDrive className="w-4 h-4" />Create Backup Now</>}
+              </button>
+              {backupResult && (
+                <div className={`mt-4 p-4 rounded-lg text-sm ${backupResult.error ? 'bg-red-900/50 border border-red-700 text-red-300' : 'bg-green-900/50 border border-green-700 text-green-300'}`}>
+                  {backupResult.error ? `Error: ${backupResult.error}` : <>Backup created: <strong>{backupResult.filename}</strong> ({(backupResult.size_bytes / 1024).toFixed(1)} KB)</>}
+                </div>
+              )}
+            </div>
+
+            {/* Consolidation */}
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+              <h2 className="text-xl font-semibold text-white mb-2 flex items-center gap-2">
+                <Merge className="w-5 h-5 text-cyan-400" />Consolidate Databases
+              </h2>
+              <p className="text-gray-400 text-sm mb-4">LLM-guided merge of related databases. Creates backup first.</p>
+              <button onClick={handleConsolidate} disabled={consolidating || !isAdmin} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 rounded-lg text-white font-medium">
+                {consolidating ? <><RefreshCw className="w-4 h-4 animate-spin" />Consolidating...</> : <><Merge className="w-4 h-4" />Run Consolidation</>}
+              </button>
+              {consolidateResult && (
+                <div className={`mt-4 p-4 rounded-lg text-sm max-h-60 overflow-y-auto ${consolidateResult.error ? 'bg-red-900/50 border border-red-700 text-red-300' : 'bg-green-900/50 border border-green-700 text-green-300'}`}>
+                  {consolidateResult.error ? `Error: ${consolidateResult.error}` : (
+                    <div>
+                      <p className="font-medium mb-2">Consolidation complete</p>
+                      {consolidateResult.merged && consolidateResult.merged.length > 0 ? (
+                        <ul className="list-disc list-inside space-y-1">
+                          {consolidateResult.merged.map((m: any, i: number) => (
+                            <li key={i}>{m.source} → {m.target} ({m.documents_moved} docs moved)</li>
+                          ))}
+                        </ul>
+                      ) : <p>No databases were consolidated. All databases are already well-organized.</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Backup List */}
+          <div className="bg-gray-800 rounded-xl border border-gray-700">
+            <div className="p-6 border-b border-gray-700 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                <HardDrive className="w-5 h-5 text-gray-400" />Available Backups ({backups.length})
+              </h2>
+              <button onClick={fetchBackups} disabled={loadingBackups} className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white">
+                <RefreshCw className={`w-4 h-4 ${loadingBackups ? 'animate-spin' : ''}`} />Refresh
+              </button>
+            </div>
+            <div className="p-6">
+              {loadingBackups ? (
+                <div className="flex justify-center py-8"><div className="loading-spinner" /></div>
+              ) : backups.length === 0 ? (
+                <p className="text-gray-500 text-center py-8">No backups found. Create one above.</p>
+              ) : (
+                <div className="space-y-3">
+                  {backups.map((backup, i) => (
+                    <div key={i} className="flex items-center justify-between bg-gray-700/50 rounded-lg p-4 border border-gray-600">
+                      <div className="flex items-center gap-4">
+                        <HardDrive className="w-5 h-5 text-amber-400" />
+                        <div>
+                          <p className="text-white font-medium text-sm">{backup.filename}</p>
+                          <div className="flex gap-3 text-xs text-gray-400 mt-1">
+                            <span>{backup.created ? new Date(backup.created).toLocaleString() : 'Unknown date'}</span>
+                            <span>{backup.size_bytes ? `${(backup.size_bytes / 1024).toFixed(1)} KB` : ''}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <a href={ragAPI.downloadBackup(backup.filename)} download className="flex items-center gap-1 px-3 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg text-white text-sm">
+                          <Download className="w-4 h-4" />Download
+                        </a>
+                        <button onClick={() => handleRestoreBackup(backup.filename)} disabled={restoringBackup === backup.filename || !isAdmin} className="flex items-center gap-1 px-3 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 rounded-lg text-white text-sm">
+                          {restoringBackup === backup.filename ? <><RefreshCw className="w-4 h-4 animate-spin" />Restoring...</> : <><RotateCcw className="w-4 h-4" />Restore</>}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
