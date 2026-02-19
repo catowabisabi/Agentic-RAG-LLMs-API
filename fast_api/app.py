@@ -33,6 +33,7 @@ from fast_api.routers.intent_router import router as intent_router
 from fast_api.routers.ws_chat_router import router as ws_chat_router
 from fast_api.routers.sw_skill_router import router as sw_skill_router
 from fast_api.routers.config_router import router as config_router
+from fast_api.routers.experiment_router import router as experiment_router
 
 # Import middleware
 from fast_api.middleware.auth import (
@@ -167,6 +168,7 @@ app.include_router(memory_router)
 app.include_router(intent_router)
 app.include_router(sw_skill_router)  # SolidWorks Skill DB (structured 689MB)
 app.include_router(config_router)  # Configuration management
+app.include_router(experiment_router)  # Experimental RAG strategies (A/B testing)
 
 
 @app.get("/")

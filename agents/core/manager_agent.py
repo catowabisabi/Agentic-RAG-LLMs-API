@@ -161,6 +161,218 @@ class ManagerAgent(BaseAgent):
                 "timestamp": datetime.now().isoformat()
             })
     
+    # ============== Manager Double-Check: Validation & Retry ==============
+    
+    async def _manager_validate_response(
+        self,
+        query: str,
+        response_text: str,
+        sources: list = None,
+        workflow: str = "unknown",
+        session_id: str = None,
+        task_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        真正的 Manager 品質驗證 — 用 LLM 檢查回答是否合格。
+        
+        Manager 作為最後把關：
+        1. 回答是否真正回應了問題（不是答非所問）
+        2. 回答是否包含有害/錯誤資訊
+        3. 回答是否足夠完整
+        4. 語言是否匹配
+        
+        Returns:
+            {
+                "passed": bool,
+                "quality_score": float (0-1),
+                "issues": list of strings,
+                "suggestions": list of strings,
+                "reasoning": str,
+                "should_retry": bool,
+                "retry_hint": str or None  # 給重試時用的具體改進指示
+            }
+        """
+        try:
+            await self._broadcast_thinking(session_id, {
+                "status": "Manager double-checking response quality...",
+                "workflow": workflow
+            }, task_id)
+            
+            has_sources = bool(sources and len(sources) > 0)
+            
+            validation_prompt = f"""You are a strict quality control manager. Evaluate whether this response is ready to send to the user.
+
+User Question: {query}
+
+Agent Response:
+{response_text[:3000]}
+
+Sources Available: {len(sources) if sources else 0}
+Workflow: {workflow}
+
+Evaluate these aspects (score 0-1 each):
+1. RELEVANCE: Does the response actually address what the user asked? (not answering a different question)
+2. COMPLETENESS: Is it sufficiently detailed? (not too vague or empty)
+3. ACCURACY_SIGNALS: Does it avoid contradictions, hedging, or hallucination signals?
+4. LANGUAGE_MATCH: Does it respond in the same language the user asked in?
+5. HARMFUL_CONTENT: Is it free from any inappropriate/harmful content?
+
+Score STRICTLY. Common failure modes:
+- Response says "I don't know" when sources were available → low relevance
+- Response repeats the question without answering → low completeness
+- Response is in English when user asked in Chinese (or vice versa) → low language match
+- Response contains "error" or system messages → fail
+
+Respond in JSON only:
+{{
+    "relevance": 0.0-1.0,
+    "completeness": 0.0-1.0,
+    "accuracy_signals": 0.0-1.0,
+    "language_match": 0.0-1.0,
+    "harmful_content_free": 0.0-1.0,
+    "overall": 0.0-1.0,
+    "passed": true/false,
+    "issues": ["issue1", ...],
+    "suggestions": ["how to fix1", ...],
+    "reasoning": "brief explanation",
+    "retry_hint": "specific instruction for retry if failed, null if passed"
+}}"""
+            
+            result = await self.llm_service.generate(
+                prompt=validation_prompt,
+                system_message="You are a quality control evaluator. Return JSON only.",
+                temperature=0.1
+            )
+            
+            import json as json_mod
+            response = result.content.strip()
+            # Clean markdown wrapping
+            if response.startswith("```"):
+                response = response.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            
+            data = json_mod.loads(response)
+            
+            overall = data.get("overall", 0.5)
+            passed = data.get("passed", overall >= 0.6)
+            
+            logger.info(f"[Manager QC] {workflow} validation: score={overall:.2f}, passed={passed}")
+            
+            if _debug:
+                _debug.record_agent_output(
+                    agent_name="manager_validation",
+                    task_id=task_id or "",
+                    output_data={
+                        "score": overall,
+                        "passed": passed,
+                        "issues": data.get("issues", []),
+                        "workflow": workflow
+                    },
+                    session_id=session_id or ""
+                )
+            
+            return {
+                "passed": passed,
+                "quality_score": overall,
+                "issues": data.get("issues", []),
+                "suggestions": data.get("suggestions", []),
+                "reasoning": data.get("reasoning", ""),
+                "should_retry": not passed and overall < 0.6,
+                "retry_hint": data.get("retry_hint")
+            }
+            
+        except Exception as e:
+            logger.warning(f"[Manager QC] Validation failed: {e}, allowing response through")
+            return {
+                "passed": True,
+                "quality_score": 0.7,
+                "issues": [f"Validation error: {str(e)}"],
+                "suggestions": [],
+                "reasoning": "Validation system error - defaulting to pass",
+                "should_retry": False,
+                "retry_hint": None
+            }
+    
+    async def _manager_retry_with_feedback(
+        self,
+        query: str,
+        original_response: str,
+        validation_result: Dict[str, Any],
+        context: str = "",
+        sources: list = None,
+        session_id: str = None,
+        task_id: str = None
+    ) -> str:
+        """
+        Manager 重試 — 用 LLM 基於驗證反饋重新生成回答。
+        
+        不重跑整個 pipeline，而是用 LLM 修正已有的回答。
+        這樣既快又能針對性地修正問題。
+        """
+        try:
+            issues = validation_result.get("issues", [])
+            retry_hint = validation_result.get("retry_hint", "")
+            suggestions = validation_result.get("suggestions", [])
+            
+            await self._broadcast_thinking(session_id, {
+                "status": f"Manager retrying: fixing {len(issues)} issues...",
+                "issues": issues[:3]
+            }, task_id)
+            
+            logger.info(f"[Manager Retry] Issues: {issues}, Hint: {retry_hint}")
+            
+            # Build source context for retry
+            source_context = ""
+            if sources:
+                source_parts = []
+                for i, s in enumerate(sources[:5]):
+                    content = s.get("content", s.get("snippet", ""))
+                    title = s.get("title", f"Source {i+1}")
+                    if content:
+                        source_parts.append(f"[{title}]: {content[:500]}")
+                if source_parts:
+                    source_context = "\n\nAvailable Sources:\n" + "\n".join(source_parts)
+            
+            retry_prompt = f"""The previous response to this question was rejected by quality control.
+
+Question: {query}
+
+Previous Response (REJECTED):
+{original_response[:2000]}
+
+Quality Control Feedback:
+- Issues Found: {', '.join(issues) if issues else 'None specified'}
+- Specific Fix Needed: {retry_hint or 'General improvement needed'}
+- Suggestions: {', '.join(suggestions) if suggestions else 'None'}
+
+{source_context}
+
+{context[:2000] if context else ""}
+
+Please provide an IMPROVED response that:
+1. Directly addresses the user's question
+2. Fixes ALL the issues identified above
+3. Matches the language of the user's question
+4. Is clear, complete, and accurate
+5. References source material when available
+
+Improved Response:"""
+            
+            result = await self.llm_service.generate(
+                prompt=retry_prompt,
+                system_message="You are a helpful assistant. Provide an improved, high-quality response that fixes all identified issues.",
+                temperature=0.3
+            )
+            
+            improved = result.content if hasattr(result, 'content') else str(result)
+            
+            logger.info(f"[Manager Retry] Generated improved response: {len(improved)} chars")
+            
+            return improved
+            
+        except Exception as e:
+            logger.warning(f"[Manager Retry] Failed: {e}, returning original")
+            return original_response
+    
     async def start(self):
         """Start the manager agent"""
         await super().start()
@@ -1049,11 +1261,13 @@ Guidelines:
         # [REMOVED] The entire "if not use_react:" fallback block has been removed
         # All RAG queries now go through ReAct loop for consistent behavior
         
-        # ============== Metacognition: Self-Evaluation ==============
+        # ============== Manager Double-Check: Validate & Retry ==============
         quality_score = 0.7
         should_retry = False
+        retry_performed = False
         
         try:
+            # Step 1: Use existing Metacognition for quick check
             from agents.core.metacognition_engine import get_self_evaluator, get_strategy_adapter
             
             evaluator = get_self_evaluator()
@@ -1061,7 +1275,7 @@ Guidelines:
             quality_score = quick_score
             
             if needs_full_eval and quick_score < 0.6:
-                # Do full evaluation
+                # Step 2: Full metacognition evaluation
                 full_eval = await evaluator.evaluate_response(
                     query=query,
                     response=response_text,
@@ -1070,21 +1284,70 @@ Guidelines:
                 )
                 quality_score = full_eval.score
                 should_retry = full_eval.should_retry
+            
+            # Step 3: Manager's own validation (the real double-check)
+            validation = await self._manager_validate_response(
+                query=query,
+                response_text=response_text,
+                sources=sources,
+                workflow="agentic_rag",
+                session_id=session_id,
+                task_id=task_id
+            )
+            
+            # Use the lower of metacognition and manager validation scores
+            manager_score = validation.get("quality_score", 0.7)
+            quality_score = min(quality_score, manager_score)
+            
+            # Step 4: Retry if either check says quality is too low
+            if validation.get("should_retry") or (should_retry and quality_score < 0.6):
+                logger.info(f"[Manager] Quality too low ({quality_score:.2f}), retrying with feedback...")
                 
-                if should_retry and full_eval.retry_strategy:
-                    logger.info(f"[Manager] Metacognition suggests retry: {full_eval.retry_strategy}")
-                    # Could implement retry logic here
+                improved_response = await self._manager_retry_with_feedback(
+                    query=query,
+                    original_response=response_text,
+                    validation_result=validation,
+                    context=memory_context,
+                    sources=sources,
+                    session_id=session_id,
+                    task_id=task_id
+                )
+                
+                # Validate the retry
+                retry_validation = await self._manager_validate_response(
+                    query=query,
+                    response_text=improved_response,
+                    sources=sources,
+                    workflow="agentic_rag_retry",
+                    session_id=session_id,
+                    task_id=task_id
+                )
+                
+                retry_score = retry_validation.get("quality_score", 0.5)
+                
+                # Use improved version if it's actually better
+                if retry_score > quality_score:
+                    logger.info(f"[Manager] Retry improved quality: {quality_score:.2f} → {retry_score:.2f}")
+                    response_text = improved_response
+                    quality_score = retry_score
+                    retry_performed = True
+                    agents_involved.append("manager_retry")
+                else:
+                    logger.info(f"[Manager] Retry did not improve ({retry_score:.2f} vs {quality_score:.2f}), keeping original")
             
             # Record experience
-            adapter = get_strategy_adapter()
-            adapter.record_outcome(
-                query=query,
-                strategy="react_loop" if use_react else "simple_rag",
-                evaluation=full_eval if needs_full_eval else None
-            ) if needs_full_eval else None
+            try:
+                adapter = get_strategy_adapter()
+                adapter.record_outcome(
+                    query=query,
+                    strategy="react_loop",
+                    evaluation=full_eval if needs_full_eval else None
+                ) if needs_full_eval else None
+            except Exception:
+                pass
             
         except Exception as e:
-            logger.warning(f"Metacognition failed: {e}")
+            logger.warning(f"Manager validation failed: {e}")
         
         # ============== Store Memory ==============
         try:

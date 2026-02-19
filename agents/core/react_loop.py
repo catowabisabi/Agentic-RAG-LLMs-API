@@ -395,7 +395,7 @@ Respond in this exact JSON format:
 Question: {query}
 
 Current Knowledge Context:
-{context[:3000] if context else "No context yet."}
+{context[:16000] if context else "No context yet."}
 
 Previous Steps:
 {history if history else "No previous steps."}
@@ -705,7 +705,7 @@ Respond in this exact JSON format:
 Question: {query}
 
 Gathered Information:
-{accumulated_context[:4000]}
+{accumulated_context[:16000]}
 
 Provide a comprehensive answer based on available information. If information is incomplete, acknowledge this but still provide the best answer you can."""
         

@@ -103,6 +103,78 @@ OPENAI_API_KEY = _config.OPENAI_API_KEY
 EMBEDDING_MODEL = _config.EMBEDDING_MODEL
 DEFAULT_MODEL = _config.DEFAULT_MODEL
 
+# ============== Cross-Encoder Reranking Service (Phase 1) ==============
+class RerankerService:
+    """Cross-Encoder reranker for precise relevance scoring."""
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self._model = None
+        self._model_name = _config.RERANK_MODEL
+        self._enabled = _config.RERANK_ENABLED
+        
+    def _load_model(self):
+        """Lazy-load cross-encoder model (only when first needed)."""
+        if self._model is not None:
+            return
+        try:
+            from sentence_transformers import CrossEncoder
+            logger.info(f"Loading reranker model: {self._model_name}")
+            self._model = CrossEncoder(self._model_name)
+            logger.info("Reranker model loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load reranker model: {e}. Reranking disabled.")
+            self._enabled = False
+    
+    def rerank(self, query: str, documents: list, top_k: int = 5) -> list:
+        """
+        Rerank documents using cross-encoder.
+        
+        Args:
+            query: The search query
+            documents: List of dicts with 'content' field
+            top_k: Number of top results to return
+            
+        Returns:
+            Reranked and filtered list
+        """
+        if not self._enabled or not documents:
+            return documents[:top_k]
+        
+        self._load_model()
+        if self._model is None:
+            return documents[:top_k]
+        
+        try:
+            # Prepare query-document pairs
+            pairs = [(query, doc.get("content", "")[:512]) for doc in documents]
+            
+            # Get cross-encoder scores
+            scores = self._model.predict(pairs)
+            
+            # Attach scores and sort
+            for doc, score in zip(documents, scores):
+                doc["rerank_score"] = float(score)
+            
+            documents.sort(key=lambda x: x.get("rerank_score", -999), reverse=True)
+            
+            return documents[:top_k]
+        except Exception as e:
+            logger.warning(f"Reranking failed: {e}")
+            return documents[:top_k]
+
+# Global reranker instance
+_reranker = RerankerService()
+
 
 class VectorDBManager:
     """
@@ -170,10 +242,17 @@ class VectorDBManager:
             model=EMBEDDING_MODEL
         )
         
-        # Text splitter for chunking
+        # Text splitter for chunking (Phase 2: configurable sizes)
         self._text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=_config.CHUNK_SIZE,
+            chunk_overlap=_config.CHUNK_OVERLAP,
+            length_function=len
+        )
+        
+        # Parent chunk splitter (Phase 2: larger context windows)
+        self._parent_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=_config.PARENT_CHUNK_SIZE,
+            chunk_overlap=400,
             length_function=len
         )
         
@@ -553,11 +632,20 @@ Summary:"""
         db_name: str,
         content: str,
         metadata: Dict[str, Any] = None,
-        summarize: bool = True,
+        summarize: bool = False,
         chunk: bool = True
     ) -> Dict[str, Any]:
         """
         Insert a document into a vector database.
+        
+        Phase 2 Enhancement: Parent-child document retrieval.
+        - Child chunks (small, 2000 chars) are used for precise vector search
+        - Parent chunks (large, 6000 chars) are stored in metadata for context expansion
+        - When a child chunk matches, the parent chunk provides full surrounding context
+        
+        Note: summarize defaults to False (Phase 2.5 fix).
+        Summarizing domain documents (medical, legal, accounting) destroys precision.
+        Use summarize=True only for general/overview documents.
         
         Args:
             db_name: Target database name
@@ -571,6 +659,27 @@ Summary:"""
         """
         collection = self._get_collection(db_name)
         metadata = metadata or {}
+        
+        # Phase 2.4: Auto-enhance metadata
+        import hashlib
+        if "content_hash" not in metadata:
+            metadata["content_hash"] = hashlib.md5(content[:5000].encode()).hexdigest()
+        if "content_length" not in metadata:
+            metadata["content_length"] = len(content)
+        if "inserted_at" not in metadata:
+            metadata["inserted_at"] = datetime.now().isoformat()
+        # Auto-detect document type from source path if available
+        source = metadata.get("source", "")
+        if source and "document_type" not in metadata:
+            ext = source.rsplit(".", 1)[-1].lower() if "." in source else ""
+            type_map = {
+                "pdf": "pdf", "docx": "word", "doc": "word",
+                "xlsx": "excel", "xls": "excel", "csv": "csv",
+                "txt": "text", "md": "markdown", "html": "html",
+                "json": "json", "xml": "xml", "py": "code",
+                "js": "code", "ts": "code", "java": "code"
+            }
+            metadata["document_type"] = type_map.get(ext, "unknown")
         
         documents_to_insert = []
         
@@ -594,14 +703,29 @@ Summary:"""
                     "metadata": {**metadata, "is_summary": True}
                 })
         else:
-            # Use original content
+            # Phase 2: Parent-child chunking for better context
             if chunk:
-                chunks = self._text_splitter.split_text(content)
-                for i, chunk_text in enumerate(chunks):
-                    documents_to_insert.append({
-                        "content": chunk_text,
-                        "metadata": {**metadata, "chunk_index": i}
-                    })
+                # Step 1: Create parent chunks (large context windows)
+                parent_chunks = self._parent_splitter.split_text(content)
+                
+                child_index = 0
+                for parent_idx, parent_text in enumerate(parent_chunks):
+                    # Step 2: Split each parent into child chunks (for search)
+                    child_chunks = self._text_splitter.split_text(parent_text)
+                    
+                    for child_offset, child_text in enumerate(child_chunks):
+                        documents_to_insert.append({
+                            "content": child_text,
+                            "metadata": {
+                                **metadata,
+                                "chunk_index": child_index,
+                                "parent_index": parent_idx,
+                                "child_offset": child_offset,
+                                "parent_content": parent_text[:_config.PARENT_CHUNK_SIZE],
+                                "chunk_type": "child"
+                            }
+                        })
+                        child_index += 1
             else:
                 documents_to_insert.append({
                     "content": content,
@@ -728,6 +852,130 @@ Summary:"""
             chunk=True
         )
     
+    async def insert_hierarchical(
+        self,
+        db_name: str,
+        content: str,
+        title: str = "",
+        source: str = "",
+        category: str = "general",
+        tags: List[str] = None,
+        sections: List[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Phase 2.3: Hierarchical document ingestion.
+        
+        Creates a two-layer index:
+        - Layer 1: Document/section summaries (stored with chunk_type='summary_index')
+                    These act as routing signals to find which sections are relevant.
+        - Layer 2: Original content chunks (stored with chunk_type='child')
+                    These provide the actual detail content.
+        
+        This means:
+        - Quick queries first match against summaries (fast routing)
+        - Detailed retrieval then fetches relevant child chunks
+        
+        Args:
+            db_name: Target database
+            content: Full document content
+            title: Document title
+            source: Source file path
+            category: Document category
+            tags: Document tags
+            sections: Optional pre-split sections [{title, content}]
+        """
+        metadata = {
+            "title": title,
+            "source": source,
+            "category": category,
+            "tags": ",".join(tags) if tags else "",
+            "inserted_at": datetime.now().isoformat(),
+            "content_length": len(content)
+        }
+        
+        all_ids = []
+        
+        # Split into sections if not provided
+        if not sections:
+            # Use parent splitter to create section-sized chunks
+            section_texts = self._parent_splitter.split_text(content)
+            sections = [{"title": f"{title} - Section {i+1}", "content": s} 
+                       for i, s in enumerate(section_texts)]
+        
+        # Layer 1: Generate and store section summaries
+        for i, section in enumerate(sections):
+            section_content = section.get("content", "")
+            section_title = section.get("title", f"Section {i+1}")
+            
+            if len(section_content) < 100:
+                continue
+            
+            try:
+                # Generate section summary  
+                summary = await self.summarize_document(section_content, max_length=200)
+                
+                summary_meta = {
+                    **metadata,
+                    "chunk_type": "summary_index",
+                    "section_index": i,
+                    "section_title": section_title,
+                    "is_summary": True,
+                    "original_section_length": len(section_content)
+                }
+                
+                # Insert summary as Layer 1 index entry
+                summary_id = f"{db_name}_summary_{datetime.now().strftime('%Y%m%d%H%M%S')}_{i}"
+                embedding = await asyncio.to_thread(
+                    self._embeddings.embed_query, summary
+                )
+                
+                collection = self._get_collection(db_name)
+                clean_meta = {}
+                for k, v in summary_meta.items():
+                    if v is None:
+                        clean_meta[k] = ""
+                    elif isinstance(v, (str, int, float, bool)):
+                        clean_meta[k] = v
+                    else:
+                        clean_meta[k] = str(v)
+                
+                collection.add(
+                    ids=[summary_id],
+                    embeddings=[embedding],
+                    documents=[summary],
+                    metadatas=[clean_meta]
+                )
+                all_ids.append(summary_id)
+                
+            except Exception as e:
+                logger.warning(f"Failed to create summary for section {i}: {e}")
+        
+        # Layer 2: Insert original content with parent-child chunking
+        result = await self.insert_document(
+            db_name=db_name,
+            content=content,
+            metadata={**metadata, "has_hierarchical_index": True},
+            summarize=False,
+            chunk=True
+        )
+        all_ids.extend(result.get("document_ids", []))
+        
+        # Update document count
+        collection = self._get_collection(db_name)
+        self._metadata["databases"][db_name]["document_count"] = collection.count()
+        self._save_metadata()
+        
+        logger.info(f"[Hierarchical] Inserted {len(all_ids)} items ({len(sections)} summaries + chunks) into {db_name}")
+        
+        return {
+            "success": True,
+            "database": db_name,
+            "document_ids": all_ids,
+            "summary_count": len(sections),
+            "total_items": len(all_ids),
+            "hierarchical": True
+        }
+    
     # ============== Query ==============
     
     async def query(
@@ -809,7 +1057,146 @@ Summary:"""
             "total_results": len(formatted)
         }
     
-    async def query_all_databases(
+    async def query_with_rerank(
+        self,
+        query: str,
+        db_name: str = None,
+        top_k: int = 5,
+        candidates: int = None,
+        min_similarity: float = None,
+        filter_metadata: Dict[str, Any] = None,
+        rerank: bool = None
+    ) -> Dict[str, Any]:
+        """
+        Enhanced query with reranking and score filtering (Phase 1).
+        
+        Pipeline: Retrieve candidates → Score filter → Rerank → Return top_k
+        
+        Args:
+            query: Query string
+            db_name: Target database
+            top_k: Final number of results
+            candidates: Number of initial candidates (default: config.TOP_K_CANDIDATES)
+            min_similarity: Minimum similarity threshold (default: config.MIN_SIMILARITY)
+            filter_metadata: ChromaDB metadata filter
+            rerank: Override reranking enabled/disabled
+        """
+        candidates = candidates or _config.TOP_K_CANDIDATES
+        min_similarity = min_similarity if min_similarity is not None else _config.MIN_SIMILARITY
+        should_rerank = rerank if rerank is not None else _config.RERANK_ENABLED
+        
+        # Step 1: Get more candidates than needed
+        raw_result = await self.query(
+            query=query,
+            db_name=db_name,
+            n_results=candidates,
+            filter_metadata=filter_metadata
+        )
+        
+        results = raw_result.get("results", [])
+        
+        if not results:
+            return raw_result
+        
+        # Step 2: Score filtering — convert distance to similarity
+        filtered = []
+        for r in results:
+            distance = r.get("distance", 0)
+            # ChromaDB L2 distance → similarity: sim = 1 / (1 + distance)
+            similarity = 1.0 / (1.0 + distance) if distance is not None else 0.5
+            r["similarity"] = similarity
+            if similarity >= min_similarity:
+                filtered.append(r)
+        
+        if not filtered:
+            # Fallback: keep top 3 even if below threshold
+            results.sort(key=lambda x: x.get("distance", 999))
+            filtered = results[:3]
+            for r in filtered:
+                r["similarity"] = 1.0 / (1.0 + r.get("distance", 0))
+        
+        logger.info(f"[Query+Rerank] {len(results)} candidates → {len(filtered)} after score filter (min_sim={min_similarity})")
+        
+        # Step 3: Rerank
+        if should_rerank and len(filtered) > 1:
+            filtered = _reranker.rerank(query, filtered, top_k=top_k)
+            logger.info(f"[Query+Rerank] Reranked to top {len(filtered)}")
+        else:
+            # Sort by similarity and limit
+            filtered.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+            filtered = filtered[:top_k]
+        
+        # Step 4: Parent context expansion (Phase 2)
+        # If child chunks have parent_content in metadata, use it for richer context
+        for r in filtered:
+            meta = r.get("metadata", {})
+            parent_content = meta.get("parent_content", "")
+            if parent_content and meta.get("chunk_type") == "child":
+                # Store original child content for reference
+                r["child_content"] = r.get("content", "")
+                # Expand content to parent chunk for better context
+                r["content"] = parent_content
+                r["metadata"]["context_expanded"] = True
+        
+        return {
+            "database": raw_result.get("database"),
+            "query": query,
+            "results": filtered,
+            "total_results": len(filtered),
+            "candidates_evaluated": len(results),
+            "reranked": should_rerank
+        }
+    
+    async def query_targeted_dbs(
+        self,
+        query: str,
+        db_names: List[str],
+        top_k: int = 5,
+        min_similarity: float = None,
+        rerank: bool = None
+    ) -> Dict[str, Any]:
+        """
+        Query specific databases only (Phase 1: Skills-based routing).
+        
+        Instead of querying ALL databases, only query the ones
+        identified as relevant by KB Skills routing.
+        """
+        all_results = []
+        candidates_per_db = max(10, _config.TOP_K_CANDIDATES // max(len(db_names), 1))
+        
+        for db_name in db_names:
+            try:
+                result = await self.query_with_rerank(
+                    query=query,
+                    db_name=db_name,
+                    top_k=candidates_per_db,
+                    min_similarity=min_similarity,
+                    rerank=False  # Rerank after merging all results
+                )
+                for r in result.get("results", []):
+                    r["metadata"] = r.get("metadata", {})
+                    r["metadata"]["source_db"] = db_name
+                    all_results.append(r)
+            except Exception as e:
+                logger.warning(f"Error querying {db_name}: {e}")
+        
+        # Merge and rerank across all targeted DBs
+        should_rerank = rerank if rerank is not None else _config.RERANK_ENABLED
+        if should_rerank and len(all_results) > 1:
+            all_results = _reranker.rerank(query, all_results, top_k=top_k)
+        else:
+            all_results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+            all_results = all_results[:top_k]
+        
+        return {
+            "query": query,
+            "databases_queried": db_names,
+            "results": all_results,
+            "total_results": len(all_results),
+            "reranked": should_rerank
+        }
+    
+    async def query_all(
         self,
         query: str,
         n_results: int = 3,

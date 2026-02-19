@@ -263,60 +263,137 @@ Respond with your decision as JSON with these fields: should_use_rag, confidence
         queries: List[str], 
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
-        """Perform document retrieval using VectorDBManager across all active databases"""
+        """
+        Perform document retrieval with Skills-based DB routing + Reranking (Phase 1).
+        
+        Pipeline:
+        1. Use KB Skills to identify relevant databases (instead of ALL DBs)
+        2. Query only targeted DBs with more candidates
+        3. Rerank results with cross-encoder
+        4. Return top_k most relevant results
+        """
         all_docs = []
         seen_ids = set()
         
-        # Get active databases
         try:
-            db_list = self.vectordb.list_databases()
-            active_dbs = [db["name"] for db in db_list if db.get("document_count", 0) > 0]
+            # Phase 1: Skills-based DB routing
+            targeted_dbs = await self._route_to_relevant_dbs(queries[0] if queries else "")
             
-            if not active_dbs:
+            if not targeted_dbs:
+                # Fallback: get all non-empty DBs
+                db_list = self.vectordb.list_databases()
+                targeted_dbs = [db["name"] for db in db_list if db.get("document_count", 0) > 0]
+            
+            if not targeted_dbs:
                 logger.warning("No active RAG databases found")
                 return []
-                
+            
+            logger.info(f"[RAG] Querying targeted DBs: {targeted_dbs} (instead of all)")
+            
+            # Phase 1: Use query_targeted_dbs with reranking
             for query in queries:
-                for db_name in active_dbs:
-                    try:
-                        # Query each DB
-                        result = await self.vectordb.query(query, db_name, n_results=top_k)
-                        docs = result.get("results", [])
-                        
-                        for doc in docs:
-                            # Normalize ID
-                            doc_id = doc.get("id", doc.get("content", "")[:50])
+                try:
+                    result = await self.vectordb.query_targeted_dbs(
+                        query=query,
+                        db_names=targeted_dbs,
+                        top_k=top_k
+                    )
+                    
+                    for doc in result.get("results", []):
+                        doc_id = doc.get("id", doc.get("content", "")[:50])
+                        if doc_id not in seen_ids:
+                            seen_ids.add(doc_id)
                             
-                            if doc_id not in seen_ids:
-                                seen_ids.add(doc_id)
-                                
-                                # Ensure minimal fields
-                                if "metadata" not in doc:
-                                    doc["metadata"] = {}
-                                doc["metadata"]["source_db"] = db_name
-                                
-                                # Add similarity score if distance exists (Chroma logic)
-                                # Distance 0 = Identical. Distance > 1 = Different.
-                                # Similarity = 1 / (1 + distance) is a common approx
-                                if "distance" in doc:
-                                    dist = doc["distance"]
-                                    doc["similarity_score"] = 1.0 / (1.0 + dist)
-                                else:
-                                    doc["similarity_score"] = 0.5
-                                    
-                                all_docs.append(doc)
-                                
-                    except Exception as db_err:
-                        logger.warning(f"Error retrieving from {db_name}: {db_err}")
-                        continue
-        
+                            if "metadata" not in doc:
+                                doc["metadata"] = {}
+                            
+                            # Use rerank_score if available, else similarity
+                            if "rerank_score" in doc:
+                                doc["similarity_score"] = max(0, min(1, (doc["rerank_score"] + 5) / 10))
+                            elif "similarity" in doc:
+                                doc["similarity_score"] = doc["similarity"]
+                            elif "distance" in doc:
+                                doc["similarity_score"] = 1.0 / (1.0 + doc["distance"])
+                            else:
+                                doc["similarity_score"] = 0.5
+                            
+                            all_docs.append(doc)
+                except Exception as e:
+                    logger.warning(f"Error in targeted retrieval: {e}")
+                    continue
+                    
         except Exception as e:
-            logger.error(f"Error in global retrieval: {e}")
+            logger.error(f"Error in retrieval pipeline: {e}")
             
         # Sort by similarity score descending
         all_docs.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
         
-        return all_docs[:top_k * 2]  # Limit total results
+        return all_docs[:top_k]
+    
+    async def _route_to_relevant_dbs(self, query: str) -> List[str]:
+        """
+        Use KB Skills metadata to identify relevant databases for a query (Phase 1).
+        Returns list of database names most relevant to the query.
+        """
+        try:
+            skills = self.vectordb.get_skills_summary()
+            if not skills:
+                return []
+            
+            # Build skills description for LLM
+            skills_text = []
+            for s in skills:
+                if s.get("doc_count", 0) == 0:
+                    continue
+                skills_text.append(
+                    f"- {s['name']}: {s['description']} "
+                    f"(keywords: {', '.join(s.get('keywords', [])[:8])}, "
+                    f"topics: {', '.join(s.get('topics', [])[:5])}, "
+                    f"docs: {s.get('doc_count', 0)})"
+                )
+            
+            if not skills_text:
+                return []
+            
+            prompt = f"""Given this user query, select the 1-3 most relevant knowledge bases to search.
+
+Query: {query}
+
+Available Knowledge Bases:
+{chr(10).join(skills_text)}
+
+Return ONLY a JSON array of database names, e.g. ["db1", "db2"].
+Select the fewest databases needed to answer the query. If unsure, include up to 3.
+"""
+            
+            result = await self.llm_service.generate(
+                prompt=prompt,
+                system_message="You are a database routing agent. Return only a JSON array of database names.",
+                temperature=0.1
+            )
+            
+            import json
+            response = result.content.strip()
+            # Clean markdown
+            if response.startswith("```"):
+                response = response.split("\n", 1)[-1].rsplit("```", 1)[0]
+            
+            db_names = json.loads(response)
+            
+            # Validate against actual DBs
+            valid_dbs = {s["name"] for s in skills if s.get("doc_count", 0) > 0}
+            filtered = [db for db in db_names if db in valid_dbs]
+            
+            if filtered:
+                logger.info(f"[RAG Routing] Query routed to: {filtered}")
+                return filtered
+            else:
+                logger.warning(f"[RAG Routing] No valid DBs matched, falling back to all")
+                return list(valid_dbs)[:3]
+                
+        except Exception as e:
+            logger.warning(f"[RAG Routing] Skills routing failed: {e}, falling back")
+            return []
     
     async def _retrieve_documents(self, task: TaskAssignment) -> Dict[str, Any]:
         """Retrieve documents for a task"""

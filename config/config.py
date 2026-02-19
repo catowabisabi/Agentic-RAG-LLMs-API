@@ -50,9 +50,19 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")  # 嵌入模型名稱
     
     # RAG Settings - RAG 相關設定
-    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))  # 分塊大小
-    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))  # 分塊重疊
-    TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "5"))  # 檢索前 K 筆
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "2000"))  # 分塊大小 (Phase 2: 1000→2000)
+    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "400"))  # 分塊重疊 (Phase 2: 200→400)
+    PARENT_CHUNK_SIZE = int(os.getenv("PARENT_CHUNK_SIZE", "6000"))  # 父級分塊大小 (Phase 2)
+    TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "5"))  # 最終返回前 K 筆
+    TOP_K_CANDIDATES = int(os.getenv("TOP_K_CANDIDATES", "20"))  # 粗檢索候選數 (Phase 1)
+    
+    # Reranking & Filtering - 重排序與過濾設定 (Phase 1)
+    RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"  # 是否啟用 Cross-Encoder Reranking
+    RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")  # Reranking 模型
+    MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY", "0.25"))  # 最低相似度門檻
+    
+    # Context Window - 上下文限制 (Phase 3)
+    MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "16000"))  # 最大上下文字元數 (Phase 3: 3000→16000)
     
     # Agent Settings - 智能體設定
     MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))  # 最大迭代次數
