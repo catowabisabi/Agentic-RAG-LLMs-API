@@ -198,8 +198,6 @@ class ManagerAgent(BaseAgent):
                 "workflow": workflow
             }, task_id)
             
-            has_sources = bool(sources and len(sources) > 0)
-            
             validation_prompt = f"""You are a strict quality control manager. Evaluate whether this response is ready to send to the user.
 
 User Question: {query}
@@ -902,11 +900,60 @@ Guidelines:
             "timestamp": datetime.now().isoformat()
         })
         
+        # Manager validation for non-trivial responses (skip greetings/short answers)
+        quality_score = 0.8
+        if len(response_text) > 100:
+            try:
+                validation = await self._manager_validate_response(
+                    query=query,
+                    response_text=response_text,
+                    sources=[],
+                    workflow="general_knowledge",
+                    session_id=session_id,
+                    task_id=task_id
+                )
+                
+                quality_score = validation.get("quality_score", 0.8)
+                
+                if validation.get("should_retry") and not validation.get("passed"):
+                    logger.info(f"[Manager] General knowledge validation failed ({quality_score:.2f}), retrying...")
+                    
+                    improved_response = await self._manager_retry_with_feedback(
+                        query=query,
+                        original_response=response_text,
+                        validation_result=validation,
+                        context=memory_context,
+                        sources=[],
+                        session_id=session_id,
+                        task_id=task_id
+                    )
+                    
+                    retry_validation = await self._manager_validate_response(
+                        query=query,
+                        response_text=improved_response,
+                        sources=[],
+                        workflow="general_knowledge_retry",
+                        session_id=session_id,
+                        task_id=task_id
+                    )
+                    
+                    retry_score = retry_validation.get("quality_score", 0.5)
+                    if retry_score > quality_score:
+                        logger.info(f"[Manager] General retry improved: {quality_score:.2f} → {retry_score:.2f}")
+                        response_text = improved_response
+                        quality_score = retry_score
+                        agents_involved.append("manager_retry")
+                    
+            except Exception as e:
+                logger.warning(f"Manager validation skipped for general knowledge: {e}")
+        
         return {
             "response": response_text,
             "agents_involved": agents_involved,
             "sources": [],
-            "workflow": "general_knowledge"
+            "workflow": "general_knowledge",
+            "quality_score": quality_score,
+            "manager_validated": len(response_text) > 100
         }
     
     async def _handle_calculation(self, task: TaskAssignment) -> Dict[str, Any]:
@@ -1147,6 +1194,7 @@ Guidelines:
         except Exception as e:
             logger.warning(f"Memory integration failed: {e}")
             memory_context = ""
+            memory_manager = None
         
         # Also inject Cerebro personal memory
         try:
@@ -1265,6 +1313,7 @@ Guidelines:
         quality_score = 0.7
         should_retry = False
         retry_performed = False
+        full_eval = None
         
         try:
             # Step 1: Use existing Metacognition for quick check
@@ -1408,7 +1457,8 @@ Guidelines:
             "metadata": {
                 "quality_score": quality_score,
                 "used_react": use_react,
-                "should_have_retried": should_retry
+                "manager_validated": True,
+                "retry_performed": retry_performed
             }
         }
     
@@ -1422,10 +1472,12 @@ Guidelines:
         query = task.input_data.get("query", task.description)
         use_rag = task.input_data.get("use_rag", True)
         task_id = task.task_id
+        session_id = task.input_data.get("session_id") or task.input_data.get("conversation_id")
         
         agents_involved = ["manager_agent"]
         sources = []
         rag_context = ""
+        memory_context = ""
         
         # Emit start event
         if HAS_EVENT_BUS and event_bus:
@@ -1731,14 +1783,6 @@ Guidelines:
             # [NO FALLBACK] ThinkingAgent is required for general knowledge
             # If thinking_agent is not available, error should propagate
             raise RuntimeError("ThinkingAgent is required for general knowledge queries but was not available")
-            
-            if HAS_EVENT_BUS and event_bus:
-                await event_bus.emit(
-                    EventType.LLM_CALL_END,
-                    self.agent_name,
-                    {"response_length": len(response_text)},
-                    task_id=task_id
-                )
         
         # Update thinking agent status
         if HAS_EVENT_BUS and event_bus:
@@ -1809,19 +1853,63 @@ Guidelines:
             "priority": 1
         })
         
-        # Actual validation - check response quality
+        # Real validation using Manager's LLM-based quality check
         validation_passed = True
-        quality_score = 0.92
+        quality_score = 0.7
+        retry_performed = False
         
-        # Basic validation checks
-        if len(response_text) < 10:
-            validation_passed = False
-            quality_score = 0.3
-        elif len(response_text) > 50:
-            quality_score = 0.95
-        
-        # Simulate validation processing
-        await asyncio.sleep(0.5)
+        try:
+            validation = await self._manager_validate_response(
+                query=query,
+                response_text=response_text,
+                sources=sources,
+                workflow="complex_query",
+                session_id=session_id,
+                task_id=task_id
+            )
+            
+            quality_score = validation.get("quality_score", 0.7)
+            validation_passed = validation.get("passed", True)
+            
+            # If validation fails, retry with feedback
+            if validation.get("should_retry") and not validation_passed:
+                logger.info(f"[Manager] Complex query validation failed ({quality_score:.2f}), retrying...")
+                
+                improved_response = await self._manager_retry_with_feedback(
+                    query=query,
+                    original_response=response_text,
+                    validation_result=validation,
+                    context=memory_context,
+                    sources=sources,
+                    session_id=session_id,
+                    task_id=task_id
+                )
+                
+                # Re-validate the improved response
+                retry_validation = await self._manager_validate_response(
+                    query=query,
+                    response_text=improved_response,
+                    sources=sources,
+                    workflow="complex_query_retry",
+                    session_id=session_id,
+                    task_id=task_id
+                )
+                
+                retry_score = retry_validation.get("quality_score", 0.5)
+                if retry_score > quality_score:
+                    logger.info(f"[Manager] Complex retry improved: {quality_score:.2f} → {retry_score:.2f}")
+                    response_text = improved_response
+                    quality_score = retry_score
+                    validation_passed = retry_validation.get("passed", True)
+                    retry_performed = True
+                    agents_involved.append("manager_retry")
+                else:
+                    logger.info(f"[Manager] Complex retry not better, keeping original")
+                    
+        except Exception as e:
+            logger.warning(f"Manager validation in complex query failed: {e}")
+            quality_score = 0.7
+            validation_passed = True
         
         if HAS_EVENT_BUS and event_bus:
             await event_bus.emit(
@@ -1868,7 +1956,9 @@ Guidelines:
             "agents_involved": agents_involved,
             "sources": sources,
             "status": "completed",
-            "quality_score": quality_score
+            "quality_score": quality_score,
+            "manager_validated": True,
+            "retry_performed": retry_performed
         }
     
     async def _route_task(self, task: TaskAssignment) -> Dict[str, Any]:
