@@ -35,6 +35,7 @@ from fast_api.routers.sw_skill_router import router as sw_skill_router
 from fast_api.routers.config_router import router as config_router
 from fast_api.routers.experiment_router import router as experiment_router
 from fast_api.routers.auth_router import router as auth_router
+from fast_api.routers.tools_router import router as tools_router
 
 # Import middleware
 from fast_api.middleware.auth import (
@@ -180,6 +181,7 @@ app.include_router(sw_skill_router)  # SolidWorks Skill DB (structured 689MB)
 app.include_router(config_router)  # Configuration management
 app.include_router(experiment_router)  # Experimental RAG strategies (A/B testing)
 app.include_router(auth_router)  # Authentication
+app.include_router(tools_router)  # Accounting, OCR, PDF Reports, File Management
 
 
 # ========================================

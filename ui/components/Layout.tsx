@@ -14,7 +14,8 @@ import {
   LogOut,
   Bot,
   Brain,
-  FlaskConical
+  FlaskConical,
+  Wrench,
 } from 'lucide-react';
 import SystemAlertBanner from './SystemAlertBanner';
 
@@ -24,6 +25,7 @@ const navItems = [
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'RAG Query', href: '/rag', icon: Database },
   { name: 'Memory', href: '/memory', icon: Brain },
+  { name: 'Tools', href: '/tools', icon: Wrench },
   { name: 'Experiment', href: '/experiment', icon: FlaskConical },
   { name: 'WebSocket', href: '/websocket', icon: Activity },
   { name: 'Settings', href: '/settings', icon: Settings },

@@ -47,10 +47,7 @@ class ExcelProvider(BaseProvider):
             base_path: Excel 文件的基礎路徑（可選）
                       如果提供，所有相對路徑會基於此路徑解析
         """
-        super().__init__(
-            name="excel_provider",
-            description="Excel file operations: read, write, format, formulas"
-        )
+        super().__init__()
         
         # 設定基礎路徑
         self.base_path = Path(base_path) if base_path else Path.cwd()
@@ -58,6 +55,49 @@ class ExcelProvider(BaseProvider):
             self.base_path.mkdir(parents=True, exist_ok=True)
             
         logger.info(f"ExcelProvider initialized with base_path: {self.base_path}")
+
+    # ========================================
+    # BaseProvider 抽象方法實現
+    # ========================================
+
+    async def initialize(self) -> bool:
+        """Initialize the Excel provider."""
+        try:
+            # Ensure base path exists
+            self.base_path.mkdir(parents=True, exist_ok=True)
+            self._initialized = True
+            self._is_healthy = True
+            logger.info("ExcelProvider initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"ExcelProvider initialization failed: {e}")
+            return False
+
+    async def health_check(self) -> bool:
+        """Check if the Excel provider is operational."""
+        try:
+            from datetime import datetime
+            # Verify openpyxl works and base_path is accessible
+            self.base_path.exists()
+            self._is_healthy = True
+            self._last_health_check = datetime.now()
+            return True
+        except Exception:
+            self._is_healthy = False
+            return False
+
+    def get_capabilities(self) -> List[str]:
+        """Get list of operations this provider supports."""
+        return [
+            "create_workbook",
+            "get_workbook_info",
+            "create_sheet",
+            "delete_sheet",
+            "read_range",
+            "write_data",
+            "apply_formula",
+            "format_cells",
+        ]
     
     def _resolve_path(self, filepath: str) -> Path:
         """解析文件路徑（支持相對和絕對路徑）"""

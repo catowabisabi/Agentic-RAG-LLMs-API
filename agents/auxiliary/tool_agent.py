@@ -54,6 +54,35 @@ except ImportError:
     HAS_FILE_CONTROL = False
     FileControlProvider = None
 
+# New accounting / document services
+try:
+    from services.accounting_service import AccountingService
+    HAS_ACCOUNTING = True
+except ImportError:
+    HAS_ACCOUNTING = False
+    AccountingService = None
+
+try:
+    from services.ocr_service import OCRService
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+    OCRService = None
+
+try:
+    from services.pdf_report_service import PDFReportService
+    HAS_PDF_REPORT = True
+except ImportError:
+    HAS_PDF_REPORT = False
+    PDFReportService = None
+
+try:
+    from services.file_manager_service import FileManagerService
+    HAS_FILE_MANAGER = True
+except ImportError:
+    HAS_FILE_MANAGER = False
+    FileManagerService = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,6 +183,50 @@ class ToolAgent(BaseAgent):
                 self.comm_provider = None
         else:
             self.comm_provider = None
+
+        # Accounting Service
+        if HAS_ACCOUNTING:
+            try:
+                self.accounting_service = AccountingService()
+                logger.info("Accounting Service initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Accounting Service: {e}")
+                self.accounting_service = None
+        else:
+            self.accounting_service = None
+
+        # OCR Service (mock or real)
+        if HAS_OCR:
+            try:
+                self.ocr_service = OCRService()
+                logger.info("OCR Service initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize OCR Service: {e}")
+                self.ocr_service = None
+        else:
+            self.ocr_service = None
+
+        # PDF Report Service
+        if HAS_PDF_REPORT:
+            try:
+                self.pdf_report_service = PDFReportService()
+                logger.info("PDF Report Service initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize PDF Report Service: {e}")
+                self.pdf_report_service = None
+        else:
+            self.pdf_report_service = None
+
+        # File Manager Service
+        if HAS_FILE_MANAGER:
+            try:
+                self.file_manager_service = FileManagerService()
+                logger.info("File Manager Service initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize File Manager Service: {e}")
+                self.file_manager_service = None
+        else:
+            self.file_manager_service = None
     
     def _register_default_tools(self):
         """Register default built-in tools"""
@@ -242,6 +315,22 @@ class ToolAgent(BaseAgent):
         # Communication Tools (if available)
         if self.comm_provider:
             self._register_communication_tools()
+        
+        # Accounting Tools (if available)
+        if self.accounting_service:
+            self._register_accounting_tools()
+
+        # OCR Tools (if available)
+        if self.ocr_service:
+            self._register_ocr_tools()
+
+        # PDF Report Tools (if available)
+        if self.pdf_report_service:
+            self._register_pdf_report_tools()
+
+        # File Manager Tools (if available)
+        if self.file_manager_service:
+            self._register_file_manager_tools()
         
         logger.info("MCP tools registered")
     
@@ -1147,3 +1236,448 @@ Return only valid JSON with the parameter values."""
         except Exception as e:
             logger.error(f"Read emails error: {e}")
             return {"success": False, "error": str(e)}
+
+    # ========================================
+    # Accounting Tool Registration & Handlers
+    # ========================================
+
+    def _register_accounting_tools(self):
+        """Register accounting operation tools."""
+
+        self.register_tool(
+            name="accounting_create_account",
+            description="Create a new accounting ledger account",
+            parameters={
+                "name": "string - Account name (unique)",
+                "account_type": "string - Account type: general, bank, cash, receivable, payable (default: general)",
+                "currency": "string - Currency code (default: HKD)",
+                "description": "string - Account description (optional)",
+            },
+            handler=self._acct_create_account_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_list_accounts",
+            description="List all accounting ledger accounts",
+            parameters={},
+            handler=self._acct_list_accounts_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_add_transaction",
+            description="Add a transaction (income or expense) to an account (入數)",
+            parameters={
+                "account_id": "int - Account ID",
+                "type": "string - income | expense | transfer | adjustment",
+                "amount": "float - Amount in dollars (e.g., 1500.50)",
+                "description": "string - Transaction description",
+                "reference": "string - Reference number (optional)",
+                "counterparty": "string - Party name (optional)",
+                "category": "string - Category (optional)",
+                "transaction_date": "string - Date YYYY-MM-DD (default: today)",
+            },
+            handler=self._acct_add_transaction_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_list_transactions",
+            description="List transactions with optional filters (對數)",
+            parameters={
+                "account_id": "int - Account ID (optional)",
+                "status": "string - pending | reconciled | voided (optional)",
+                "start_date": "string - From date YYYY-MM-DD (optional)",
+                "end_date": "string - To date YYYY-MM-DD (optional)",
+                "limit": "int - Max results (default: 100)",
+            },
+            handler=self._acct_list_transactions_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_reconcile",
+            description="Reconcile one or more transactions (對數/核數)",
+            parameters={
+                "transaction_ids": "list[int] - Transaction IDs to reconcile",
+            },
+            handler=self._acct_reconcile_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_void",
+            description="Void a transaction (reverse balance change)",
+            parameters={
+                "transaction_id": "int - Transaction ID to void",
+            },
+            handler=self._acct_void_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_audit_log",
+            description="View the audit trail for accounting actions",
+            parameters={
+                "entity_type": "string - account | transaction (optional)",
+                "entity_id": "int - Entity ID (optional)",
+                "limit": "int - Max results (default: 100)",
+            },
+            handler=self._acct_audit_log_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_summary",
+            description="Get a summary / dashboard of an account",
+            parameters={
+                "account_id": "int - Account ID",
+            },
+            handler=self._acct_summary_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_dashboard",
+            description="Get high-level overview of all accounts and transaction counts",
+            parameters={},
+            handler=self._acct_dashboard_handler,
+            is_async=True,
+        )
+
+        logger.info("Accounting tools registered: create_account, list_accounts, add_transaction, list_transactions, reconcile, void, audit_log, summary, dashboard")
+
+    # --- Accounting handlers ---
+
+    async def _acct_create_account_handler(self, name: str, account_type: str = "general",
+                                            currency: str = "HKD", description: str = "") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.create_account(name, account_type, currency, description)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_list_accounts_handler(self) -> Dict[str, Any]:
+        try:
+            accounts = await self.accounting_service.list_accounts()
+            return {"success": True, "accounts": accounts, "count": len(accounts)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_add_transaction_handler(self, account_id: int, type: str, amount: float,
+                                             description: str = "", reference: str = "",
+                                             counterparty: str = "", category: str = "",
+                                             transaction_date: str = "") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.add_transaction(
+                account_id=account_id, txn_type=type, amount=amount,
+                description=description, reference=reference,
+                counterparty=counterparty, category=category,
+                transaction_date=transaction_date,
+            )
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_list_transactions_handler(self, account_id: int = None, status: str = None,
+                                               start_date: str = None, end_date: str = None,
+                                               limit: int = 100) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.list_transactions(
+                account_id=account_id, status=status,
+                start_date=start_date, end_date=end_date, limit=limit,
+            )
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_reconcile_handler(self, transaction_ids: list) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.batch_reconcile(transaction_ids)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_void_handler(self, transaction_id: int) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.void_transaction(transaction_id)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_audit_log_handler(self, entity_type: str = None, entity_id: int = None,
+                                       limit: int = 100) -> Dict[str, Any]:
+        try:
+            logs = await self.accounting_service.get_audit_log(
+                entity_type=entity_type, entity_id=entity_id, limit=limit,
+            )
+            return {"success": True, "audit_log": logs, "count": len(logs)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_summary_handler(self, account_id: int) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.get_account_summary(account_id)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_dashboard_handler(self) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.get_dashboard()
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ========================================
+    # OCR Tool Registration & Handlers
+    # ========================================
+
+    def _register_ocr_tools(self):
+        """Register OCR tools."""
+
+        self.register_tool(
+            name="ocr_file",
+            description="Extract text from an image (JPG/PNG) or PDF file using OCR",
+            parameters={
+                "file_path": "string - Path to image or PDF file",
+            },
+            handler=self._ocr_file_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="ocr_batch",
+            description="Extract text from multiple image/PDF files",
+            parameters={
+                "file_paths": "list[string] - List of file paths",
+            },
+            handler=self._ocr_batch_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="ocr_results",
+            description="List recent OCR results",
+            parameters={
+                "limit": "int - Max results (default: 50)",
+            },
+            handler=self._ocr_list_results_handler,
+            is_async=True,
+        )
+
+        logger.info("OCR tools registered: ocr_file, ocr_batch, ocr_results")
+
+    async def _ocr_file_handler(self, file_path: str) -> Dict[str, Any]:
+        try:
+            result = await self.ocr_service.ocr_file(file_path)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _ocr_batch_handler(self, file_paths: list) -> Dict[str, Any]:
+        try:
+            result = await self.ocr_service.ocr_batch(file_paths)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _ocr_list_results_handler(self, limit: int = 50) -> Dict[str, Any]:
+        try:
+            results = await self.ocr_service.list_results(limit=limit)
+            return {"success": True, "results": results, "count": len(results)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ========================================
+    # PDF Report Tool Registration & Handlers
+    # ========================================
+
+    def _register_pdf_report_tools(self):
+        """Register PDF report tools."""
+
+        self.register_tool(
+            name="generate_report",
+            description="Generate a PDF/MD report from Markdown content",
+            parameters={
+                "title": "string - Report title",
+                "markdown_content": "string - Markdown content for the report body",
+                "author": "string - Author name (default: System)",
+            },
+            handler=self._pdf_generate_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="generate_accounting_report",
+            description="Generate a formatted accounting report (PDF/MD) for an account",
+            parameters={
+                "account_id": "int - Account ID to generate report for",
+                "title": "string - Report title (default: Accounting Report)",
+            },
+            handler=self._pdf_accounting_report_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="list_reports",
+            description="List previously generated reports",
+            parameters={
+                "limit": "int - Max results (default: 50)",
+            },
+            handler=self._pdf_list_reports_handler,
+            is_async=True,
+        )
+
+        logger.info("PDF Report tools registered: generate_report, generate_accounting_report, list_reports")
+
+    async def _pdf_generate_handler(self, title: str, markdown_content: str,
+                                     author: str = "System") -> Dict[str, Any]:
+        try:
+            result = await self.pdf_report_service.generate_report(title, markdown_content, author=author)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _pdf_accounting_report_handler(self, account_id: int,
+                                              title: str = "Accounting Report") -> Dict[str, Any]:
+        try:
+            if not self.accounting_service:
+                return {"success": False, "error": "Accounting service not available"}
+            summary = await self.accounting_service.get_account_summary(account_id)
+            txn_data = await self.accounting_service.list_transactions(account_id=account_id, limit=500)
+            result = await self.pdf_report_service.generate_accounting_report(
+                account_summary=summary,
+                transactions=txn_data.get("transactions", []),
+                title=title,
+            )
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _pdf_list_reports_handler(self, limit: int = 50) -> Dict[str, Any]:
+        try:
+            reports = await self.pdf_report_service.list_reports(limit=limit)
+            return {"success": True, "reports": reports, "count": len(reports)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ========================================
+    # File Manager Tool Registration & Handlers
+    # ========================================
+
+    def _register_file_manager_tools(self):
+        """Register file management tools."""
+
+        self.register_tool(
+            name="file_move",
+            description="Move a file to a designated folder",
+            parameters={
+                "src": "string - Source file path",
+                "dest_folder": "string - Destination folder path",
+                "overwrite": "boolean - Overwrite if exists (default: false)",
+            },
+            handler=self._fm_move_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="file_copy",
+            description="Copy a file to a designated folder",
+            parameters={
+                "src": "string - Source file path",
+                "dest_folder": "string - Destination folder path",
+                "overwrite": "boolean - Overwrite if exists (default: false)",
+            },
+            handler=self._fm_copy_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="file_list",
+            description="List files and folders in a directory",
+            parameters={
+                "path": "string - Directory path (default: current dir)",
+            },
+            handler=self._fm_list_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="file_info",
+            description="Get metadata about a file (size, dates, etc.)",
+            parameters={
+                "path": "string - File path",
+            },
+            handler=self._fm_info_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="file_mkdir",
+            description="Create a directory (including parent directories)",
+            parameters={
+                "path": "string - Directory path to create",
+            },
+            handler=self._fm_mkdir_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="file_move_batch",
+            description="Move multiple files to a designated folder",
+            parameters={
+                "file_paths": "list[string] - List of source file paths",
+                "dest_folder": "string - Destination folder path",
+                "overwrite": "boolean - Overwrite if exists (default: false)",
+            },
+            handler=self._fm_move_batch_handler,
+            is_async=True,
+        )
+
+        logger.info("File Manager tools registered: file_move, file_copy, file_list, file_info, file_mkdir, file_move_batch")
+
+    async def _fm_move_handler(self, src: str, dest_folder: str, overwrite: bool = False) -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.move_file(src, dest_folder, overwrite=overwrite)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _fm_copy_handler(self, src: str, dest_folder: str, overwrite: bool = False) -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.copy_file(src, dest_folder, overwrite=overwrite)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _fm_list_handler(self, path: str = ".") -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.list_directory(path)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _fm_info_handler(self, path: str) -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.get_file_info(path)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _fm_mkdir_handler(self, path: str) -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.create_directory(path)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _fm_move_batch_handler(self, file_paths: list, dest_folder: str,
+                                      overwrite: bool = False) -> Dict[str, Any]:
+        try:
+            result = await self.file_manager_service.move_batch(file_paths, dest_folder, overwrite=overwrite)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+

@@ -1,0 +1,10 @@
+{
+  "result_id": "641d0032",
+  "file": "D:\\codebase\\Agentic-RAG-LLMs-API\\data\\test_invoice.png",
+  "filename": "test_invoice.png",
+  "text": "[OCR Mock Result for: test_invoice.png]\nFile size: 0.0 KB | Pages: 1\n\n--- Extracted Text (mock) ---\nInvoice No: INV-2024-00123\nDate: 2024-01-15\nCompany: Acme Trading Ltd.\n\nItem          Qty   Unit Price   Amount\nWidget A       10     $50.00     $500.00\nWidget B        5    $120.00     $600.00\nService Fee     1    $200.00     $200.00\n\nSubtotal:  $1,300.00\nTax (10%):   $130.00\nTotal:     $1,430.00\n\nPayment Terms: Net 30\n--- End of OCR Mock ---",
+  "confidence": 0.95,
+  "pages": 1,
+  "mock": true,
+  "timestamp": "2026-02-19T00:02:47.060634"
+}
