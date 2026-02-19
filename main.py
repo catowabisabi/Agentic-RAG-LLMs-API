@@ -42,12 +42,20 @@ logger = logging.getLogger(__name__)
 
 
 async def create_agents():
-    """Create and register all agents (async version)"""
+    """
+    Create and register all agents (async version).
+    
+    NOTE: This is the CANONICAL agent creation function.
+    The actual runtime uses fast_api.app.create_agents() via uvicorn.
+    This function is kept for CLI/interactive modes only.
+    For production, see fast_api/app.py create_agents().
+    """
     from agents.shared_services.agent_registry import AgentRegistry
     
     registry = AgentRegistry()
     
     # Import core agents
+    from agents.core.entry_classifier import EntryClassifier
     from agents.core.manager_agent import ManagerAgent
     from agents.core.rag_agent import RAGAgent
     from agents.core.memory_agent import MemoryAgent
@@ -64,10 +72,12 @@ async def create_agents():
     from agents.auxiliary.summarize_agent import SummarizeAgent
     from agents.auxiliary.translate_agent import TranslateAgent
     from agents.auxiliary.calculation_agent import CalculationAgent
+    from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
     from agents.auxiliary.sw_agent import SWAgent
     
-    # Register core agents (await async method)
+    # Register core agents (same order as fast_api/app.py)
     logger.info("Registering core agents...")
+    await registry.register_agent(EntryClassifier())
     await registry.register_agent(ManagerAgent())
     await registry.register_agent(RAGAgent())
     await registry.register_agent(MemoryAgent())
@@ -85,6 +95,7 @@ async def create_agents():
     await registry.register_agent(SummarizeAgent())
     await registry.register_agent(TranslateAgent())
     await registry.register_agent(CalculationAgent())
+    await registry.register_agent(MemoryCaptureAgent())
     await registry.register_agent(SWAgent())
     
     logger.info(f"Registered {len(registry._agents)} agents")
@@ -307,19 +318,22 @@ Examples:
     # Load configuration
     config = Config()
     
-    # Override config with command line args
+    # Override config via environment variables so uvicorn reimport picks them up
     if args.host:
+        os.environ["API_HOST"] = args.host
         config.API_HOST = args.host
     if args.port:
+        os.environ["API_PORT"] = str(args.port)
         config.API_PORT = args.port
     if args.log_level:
+        os.environ["LOG_LEVEL"] = args.log_level
         config.LOG_LEVEL = args.log_level
         logging.getLogger().setLevel(args.log_level)
     
     # Check for API key
     if not config.OPENAI_API_KEY:
-        logger.error("OPENAI_API_KEY not set. Please set it in .env file.")
-        sys.exit(1)
+        logger.warning("⚠️  OPENAI_API_KEY not set. The server will start but LLM features will fail.")
+        logger.warning("⚠️  Set OPENAI_API_KEY in config/.env or via Settings in the UI.")
     
     # Determine run mode
     if args.query:
@@ -365,7 +379,6 @@ Examples:
         print("="*60)
         print(f"📡 API Server: http://localhost:{config.API_PORT}")
         print(f"🌐 UI Server:  http://localhost:{config.UI_PORT}")
-        print(f"🔐 Login: guest / beourguest")
         print("="*60)
         asyncio.run(run_api_and_ui(config))
         

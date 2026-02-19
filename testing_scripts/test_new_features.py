@@ -37,7 +37,7 @@ def test(name, method, url, expected_status=200, **kwargs):
         try:
             data = r.json()
             pp(data)
-        except:
+        except (ValueError, Exception):
             print(f"  Body: {r.text[:200]}")
         
         if not status_ok:

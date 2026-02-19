@@ -102,7 +102,7 @@ def migrate_database(old_db_path, collection_name, new_db_path=None):
     # Delete collection if exists
     try:
         client.delete_collection(collection_name)
-    except:
+    except Exception:
         pass
     
     collection = client.create_collection(name=collection_name)

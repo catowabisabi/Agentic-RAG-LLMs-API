@@ -16,16 +16,16 @@ export default function LoginForm() {
     setError('');
     setIsLoading(true);
 
-    // Simulate loading
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    const success = login(username, password);
-    
-    if (!success) {
-      setError('Invalid username or password');
+    try {
+      const success = await login(username, password);
+      if (!success) {
+        setError('Invalid username or password');
+      }
+    } catch {
+      setError('Failed to connect to server');
+    } finally {
+      setIsLoading(false);
     }
-    
-    setIsLoading(false);
   };
 
   return (
@@ -104,7 +104,7 @@ export default function LoginForm() {
           {/* Hint */}
           <div className="mt-6 text-center">
             <p className="text-gray-500 text-sm">
-              Demo credentials: guest / beourguest
+              Contact your administrator for credentials
             </p>
           </div>
         </div>

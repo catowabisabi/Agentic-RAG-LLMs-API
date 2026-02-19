@@ -34,6 +34,7 @@ from fast_api.routers.ws_chat_router import router as ws_chat_router
 from fast_api.routers.sw_skill_router import router as sw_skill_router
 from fast_api.routers.config_router import router as config_router
 from fast_api.routers.experiment_router import router as experiment_router
+from fast_api.routers.auth_router import router as auth_router
 
 # Import middleware
 from fast_api.middleware.auth import (
@@ -135,10 +136,19 @@ Multi-agent RAG system with:
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# CORS middleware — restrict origins in production
+from config.config import Config as _AppConfig
+_debug_mode = _AppConfig.DEBUG_MODE
+
+if _debug_mode:
+    logger.warning("⚠️  DEBUG_MODE=true → CORS allow_origins=['*']. Do NOT use in production!")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
+    allow_origins=["*"] if _debug_mode else [
+        f"http://localhost:{_AppConfig.UI_PORT}",
+        f"http://127.0.0.1:{_AppConfig.UI_PORT}",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -169,15 +179,60 @@ app.include_router(intent_router)
 app.include_router(sw_skill_router)  # SolidWorks Skill DB (structured 689MB)
 app.include_router(config_router)  # Configuration management
 app.include_router(experiment_router)  # Experimental RAG strategies (A/B testing)
+app.include_router(auth_router)  # Authentication
+
+
+# ========================================
+# System Alerts Helper
+# ========================================
+
+def _get_system_alerts() -> list:
+    """Collect system-wide alerts for the UI banner."""
+    from config.config import Config as _AlertConfig
+    alerts = []
+    if _debug_mode:
+        alerts.append({
+            "level": "warning",
+            "code": "DEBUG_MODE",
+            "message": "Debug mode is ON — CORS allows all origins. Disable for production."
+        })
+    if not _AlertConfig.OPENAI_API_KEY:
+        alerts.append({
+            "level": "error",
+            "code": "MISSING_API_KEY",
+            "message": "OPENAI_API_KEY is not configured. Go to Settings to add your key."
+        })
+    return alerts
+
+
+@app.get("/system/alerts")
+async def system_alerts():
+    """Return current system alerts (missing keys, debug mode, etc.)"""
+    return {"alerts": _get_system_alerts()}
+
+
+@app.post("/system/shutdown")
+async def system_shutdown():
+    """One-click shutdown of the API server (for emergency use from UI)."""
+    import signal, os
+    logger.warning("[System] Shutdown requested from UI!")
+    # Send SIGTERM to self
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"status": "shutting_down"}
 
 
 @app.get("/")
 async def root():
     """Root endpoint"""
+    from config.config import Config as _RootConfig
+    alerts = _get_system_alerts()
     return {
         "name": "Agentic RAG API",
         "version": "2.0.0",
         "status": "running",
+        "debug_mode": _debug_mode,
+        "is_configured": bool(_RootConfig.OPENAI_API_KEY),
+        "alerts": alerts,
         "features": {
             "react_loop": "Iterative reasoning with Think->Act->Observe",
             "websocket_streaming": "Real-time updates via /ws/chat",

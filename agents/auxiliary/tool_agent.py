@@ -641,7 +641,7 @@ Return only valid JSON with the parameter values."""
         
         try:
             parameters = json.loads(result.content)
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError):
             parameters = {"input": result.content}
         
         # Execute with the parameters
@@ -653,20 +653,68 @@ Return only valid JSON with the parameter values."""
     # Default tool handlers
     
     def _calculator_handler(self, expression: str) -> Dict[str, Any]:
-        """Handle calculator operations"""
+        """Handle calculator operations (safe — no eval)"""
+        import ast
+        import operator
         try:
-            # Safe evaluation (basic math only)
-            allowed = set("0123456789+-*/().^ ")
-            if not all(c in allowed for c in expression):
+            # Safe evaluation using AST — no arbitrary code execution
+            allowed_chars = set("0123456789+-*/().^ ")
+            if not all(c in allowed_chars for c in expression):
                 raise ValueError("Invalid characters in expression")
             
             # Replace ^ with ** for power
             expression = expression.replace("^", "**")
             
-            result = eval(expression)
+            # Safe AST-based evaluation
+            result = self._safe_math_eval(expression)
             return {"expression": expression, "result": result}
         except Exception as e:
             raise ValueError(f"Calculation error: {e}")
+    
+    @staticmethod
+    def _safe_math_eval(expr: str):
+        """Evaluate math expression safely using AST (no eval/exec)."""
+        import ast
+        import operator
+        import math as _math
+        
+        _ops = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
+        }
+        
+        def _eval(node):
+            if isinstance(node, ast.Expression):
+                return _eval(node.body)
+            elif isinstance(node, ast.Constant):  # numbers
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError(f"Unsupported constant: {node.value!r}")
+            elif isinstance(node, ast.BinOp):
+                left = _eval(node.left)
+                right = _eval(node.right)
+                op = _ops.get(type(node.op))
+                if op is None:
+                    raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+                return op(left, right)
+            elif isinstance(node, ast.UnaryOp):
+                operand = _eval(node.operand)
+                op = _ops.get(type(node.op))
+                if op is None:
+                    raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+                return op(operand)
+            else:
+                raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+        
+        tree = ast.parse(expr.strip(), mode='eval')
+        return _eval(tree)
     
     def _json_parser_handler(self, json_string: str) -> Dict[str, Any]:
         """Handle JSON parsing"""

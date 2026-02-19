@@ -305,7 +305,7 @@ class BackgroundTaskManager:
                     completed_at = datetime.fromisoformat(task.completed_at or task.created_at)
                     if (now - completed_at).total_seconds() > self._task_ttl:
                         to_remove.append(task_id)
-                except:
+                except (ValueError, TypeError):
                     pass
         
         for task_id in to_remove:

@@ -378,6 +378,48 @@ class LLMService:
             
             raise
     
+    async def astream(
+        self,
+        prompt: Union[str, List[Dict[str, str]]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+        system_message: Optional[str] = None,
+        session_id: str = "default"
+    ):
+        """
+        Stream LLM response token-by-token.
+        
+        Yields string chunks as they arrive from the LLM provider.
+        """
+        messages = self._prepare_messages(prompt, system_message)
+        
+        llm = self._llm
+        if temperature is not None or max_tokens is not None or model is not None:
+            llm = ChatOpenAI(
+                model=model or self.config.DEFAULT_MODEL,
+                temperature=temperature or self.config.TEMPERATURE,
+                max_tokens=max_tokens or self.config.MAX_TOKENS,
+                api_key=self.config.OPENAI_API_KEY,
+                streaming=True
+            )
+        
+        full_content = ""
+        async for chunk in llm.astream(messages):
+            token = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            if token:
+                full_content += token
+                yield token
+        
+        # Track usage (estimated — streaming doesn't always return exact counts)
+        if self.tracker:
+            self.tracker.track(
+                model=model or self.config.DEFAULT_MODEL,
+                prompt_tokens=len(str(messages)) // 4,  # rough estimate
+                completion_tokens=len(full_content) // 4,
+                session_id=session_id
+            )
+    
     def _prepare_messages(
         self,
         prompt: Union[str, List[Dict[str, str]]],
@@ -428,7 +470,8 @@ class LLMService:
         """清空快取"""
         if self.cache:
             self.cache.clear()
-            logger.info("[LLMService] Cache cleared")    
+            logger.info("[LLMService] Cache cleared")
+    
     async def generate_with_structured_output(
         self,
         prompt_key: str,
@@ -472,8 +515,11 @@ class LLMService:
                 return output_schema()
             raise
 
-# 單例模式
+# 單例模式（線程安全）
+import threading
+
 _llm_service: Optional[LLMService] = None
+_llm_service_lock = threading.Lock()
 
 
 def get_llm_service(
@@ -481,15 +527,20 @@ def get_llm_service(
     provider: LLMProvider = LLMProvider.OPENAI,
     reset: bool = False
 ) -> LLMService:
-    """獲取 LLM Service 單例"""
+    """獲取 LLM Service 單例（線程安全）"""
     global _llm_service
     
-    if reset or _llm_service is None:
-        _llm_service = LLMService(
-            config=config,
-            provider=provider,
-            enable_cache=True,
-            enable_tracking=True
-        )
+    if not reset and _llm_service is not None:
+        return _llm_service
+    
+    with _llm_service_lock:
+        # Double-checked locking
+        if reset or _llm_service is None:
+            _llm_service = LLMService(
+                config=config,
+                provider=provider,
+                enable_cache=True,
+                enable_tracking=True
+            )
     
     return _llm_service

@@ -16,6 +16,7 @@ import {
   Brain,
   FlaskConical
 } from 'lucide-react';
+import SystemAlertBanner from './SystemAlertBanner';
 
 const navItems = [
   { name: 'Dashboard', href: '/', icon: Home },
@@ -94,8 +95,11 @@ export default function Layout({ children }: LayoutProps) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto h-screen">
-        {children}
+      <main className="flex-1 overflow-y-auto h-screen flex flex-col">
+        <SystemAlertBanner />
+        <div className="flex-1 overflow-y-auto">
+          {children}
+        </div>
       </main>
     </div>
   );

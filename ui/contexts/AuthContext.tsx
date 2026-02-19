@@ -2,6 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:1130';
+
 export type UserRole = 'admin' | 'guest';
 
 interface AuthContextType {
@@ -9,17 +11,11 @@ interface AuthContextType {
   role: UserRole;
   username: string;
   isAdmin: boolean;
-  login: (username: string, password: string) => boolean;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-// Credentials map: username -> { password, role }
-const USERS: Record<string, { password: string; role: UserRole }> = {
-  admin: { password: 'admin', role: 'admin' },
-  guest: { password: 'beourguest', role: 'guest' },
-};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -38,18 +34,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const login = (usr: string, password: string): boolean => {
-    const user = USERS[usr];
-    if (user && user.password === password) {
-      localStorage.setItem('auth_token', 'authenticated');
-      localStorage.setItem('auth_role', user.role);
-      localStorage.setItem('auth_user', usr);
-      setIsAuthenticated(true);
-      setRole(user.role);
-      setUsername(usr);
-      return true;
+  const login = async (usr: string, password: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: usr, password }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('auth_token', 'authenticated');
+        localStorage.setItem('auth_role', data.role);
+        localStorage.setItem('auth_user', data.username);
+        setIsAuthenticated(true);
+        setRole(data.role as UserRole);
+        setUsername(data.username);
+        return true;
+      }
+      return false;
+    } catch {
+      // Fallback: if API is unreachable, deny login
+      return false;
     }
-    return false;
   };
 
   const logout = () => {

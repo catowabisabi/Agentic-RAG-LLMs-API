@@ -125,6 +125,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           if (type === 'agent_statuses' && parsed.statuses) {
             setAgentStatuses(prev => ({ ...prev, ...parsed.statuses }));
           }
+          // System error — show alert to user
+          if (type === 'system_error' || type === 'conversation_timeout') {
+            const msg = parsed.message || parsed.error || 'Unknown system error';
+            if (typeof window !== 'undefined') {
+              // Dispatch a custom event that SystemAlertBanner can listen to
+              window.dispatchEvent(new CustomEvent('system-alert', { detail: parsed }));
+            }
+          }
         } catch {
           addEvent('raw', { text: event.data }, event.data);
         }

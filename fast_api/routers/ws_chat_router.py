@@ -218,5 +218,5 @@ async def websocket_chat(websocket: WebSocket):
         logger.error(f"[WS] Unexpected error: {e}", exc_info=True)
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass

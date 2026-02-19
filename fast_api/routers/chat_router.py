@@ -189,25 +189,33 @@ async def send_agentic_message(request: AgenticChatRequest):
     """
     chat_service = get_chat_service()
     
-    # NOTE: No try-catch - errors propagate for testing visibility
-    # TODO: Add proper error handling for production
-    
-    result = await chat_service.process_message_agentic(
-        message=request.message,
-        conversation_id=request.conversation_id,
-        user_id=request.user_id,
-        use_rag=request.use_rag,
-        enable_memory=request.enable_memory
-    )
-    
-    return AgenticChatResponse(
-        response=result.response,
-        conversation_id=result.conversation_id,
-        agents_involved=result.agents_involved,
-        thinking_steps=result.metadata.get("thinking_steps", []),
-        execution_summary=result.metadata.get("execution_summary"),
-        timestamp=result.timestamp
-    )
+    try:
+        result = await chat_service.process_message_agentic(
+            message=request.message,
+            conversation_id=request.conversation_id,
+            user_id=request.user_id,
+            use_rag=request.use_rag,
+            enable_memory=request.enable_memory
+        )
+        
+        return AgenticChatResponse(
+            response=result.response,
+            conversation_id=result.conversation_id,
+            agents_involved=result.agents_involved,
+            thinking_steps=result.metadata.get("thinking_steps", []),
+            execution_summary=result.metadata.get("execution_summary"),
+            timestamp=result.timestamp
+        )
+    except Exception as e:
+        logger.error(f"[Router] Agentic processing error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Agentic processing failed",
+                "message": str(e),
+                "type": type(e).__name__
+            }
+        )
 
 
 # ========================================
@@ -217,52 +225,65 @@ async def send_agentic_message(request: AgenticChatRequest):
 @router.post("/stream")
 async def stream_message(request: ChatRequest):
     """
-    Streaming 模式 - 即時返回 Token
+    Streaming 模式 - 真正的 Token-by-Token 串流
     
-    用於快速回應用戶，逐字串流輸出。
-    Fallback：如果 LLM 不支持 streaming，返回完整響應後一次性輸出。
+    使用 LLM provider 的原生串流 API，逐 token 返回。
+    如果需要 RAG 上下文，先獲取上下文再串流 LLM 回應。
     """
     chat_service = get_chat_service()
     
     async def generate_stream():
         """生成 SSE 串流"""
         try:
-            # 嘗試使用 streaming 生成
-            has_streamed = False
+            from services.llm_service import get_llm_service
+            llm_service = get_llm_service()
             
-            # Check if LLM service supports streaming
-            from services.llm_service import LLMService
-            llm_service = LLMService()
+            # Get or create conversation
+            conversation_id = request.conversation_id or chat_service.get_or_create_conversation()
             
-            # Simple streaming approach - generate normally first
-            result = await chat_service.process_message(
-                message=request.message,
-                conversation_id=request.conversation_id,
-                user_id=request.user_id,
-                use_rag=request.use_rag,
-                enable_memory=request.enable_memory,
-                context=request.context,
-                mode=ChatMode.SYNC
-            )
+            # Build context (RAG + history) synchronously first
+            system_message = "You are a helpful AI assistant."
+            user_prompt = request.message
             
-            # Stream the response word by word for perceived speed
-            response_text = result.response
-            words = response_text.split()
+            if request.use_rag:
+                try:
+                    from services.rag_service import get_rag_service
+                    rag_service = get_rag_service()
+                    rag_result = await rag_service.query(request.message)
+                    if rag_result and rag_result.get("context"):
+                        system_message += f"\n\nRelevant context:\n{rag_result['context']}"
+                except Exception as e:
+                    logger.warning(f"RAG context retrieval failed: {e}")
             
-            for i, word in enumerate(words):
-                chunk = word + (" " if i < len(words) - 1 else "")
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-                # Small delay for smooth streaming effect
-                await asyncio.sleep(0.02)
+            # Get conversation history for context
+            history = chat_service.get_conversation_history(conversation_id, limit=6)
+            messages = []
+            for msg in history:
+                messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+            messages.append({"role": "user", "content": user_prompt})
+            
+            # Stream tokens from LLM
+            full_response = ""
+            async for token in llm_service.astream(
+                prompt=messages,
+                system_message=system_message,
+                session_id=conversation_id
+            ):
+                full_response += token
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+            
+            # Save to conversation history
+            chat_service.add_user_message(conversation_id, request.message)
+            chat_service.add_assistant_message(conversation_id, full_response)
             
             # Send metadata
-            yield f"data: {json.dumps({'type': 'metadata', 'agents': result.agents_involved, 'sources': result.sources})}\n\n"
+            yield f"data: {json.dumps({'type': 'metadata', 'conversation_id': conversation_id, 'agents': ['llm_stream']})}\n\n"
             
-            # Stream完成
-            yield f"data: {json.dumps({'type': 'done', 'message_id': result.task_uid})}\n\n"
+            # Stream done
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
             
         except Exception as e:
-            logger.error(f"Streaming error: {e}")
+            logger.error(f"Streaming error: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return StreamingResponse(

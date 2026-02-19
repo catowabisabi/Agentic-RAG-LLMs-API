@@ -254,7 +254,7 @@ def migrate_to_new_format(
     # Create collection
     try:
         client.delete_collection(target_db_name)
-    except:
+    except Exception:
         pass
     
     collection = client.create_collection(

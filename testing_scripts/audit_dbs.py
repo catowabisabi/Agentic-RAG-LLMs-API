@@ -29,7 +29,7 @@ for label, path in dbs.items():
             try:
                 c.execute(f"SELECT COUNT(*) FROM [{t}]")
                 cnt = c.fetchone()[0]
-            except:
+            except Exception:
                 cnt = "?"
             c.execute(f"PRAGMA table_info([{t}])")
             cols = [r[1] for r in c.fetchall()]

@@ -1,5 +1,8 @@
 from typing import List, Dict, Any, Optional
-from langchain_community.vectorstores import Chroma
+try:
+    from langchain_chroma import Chroma
+except ImportError:
+    from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter

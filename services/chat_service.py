@@ -97,6 +97,8 @@ class ChatService:
         self.celery = get_celery_service()
         # 內存會話存儲（Redis 不可用時的 fallback）
         self.conversations: Dict[str, List[Dict]] = {}
+        # Conversation creation lock for atomic operations
+        self._conversation_lock = asyncio.Lock()
         # 統一事件管理器
         self.event_manager = init_event_manager(self.ws_manager, session_db)
         
@@ -105,6 +107,38 @@ class ChatService:
         
         # 嘗試連接 Redis
         self._redis_initialized = False
+    
+    def _safe_create_task(self, coro, task_name: str = "background"):
+        """
+        Safely create an asyncio task with exception handling.
+        
+        Catches and logs exceptions; broadcasts critical errors to the UI
+        via the /system/alerts-compatible WebSocket event.
+        """
+        async def _wrapped():
+            try:
+                await coro
+            except Exception as e:
+                logger.error(f"[AsyncTask:{task_name}] Unhandled exception: {e}", exc_info=True)
+                # Broadcast error to connected WebSocket clients
+                try:
+                    await self.ws_manager.broadcast({
+                        "type": "system_error",
+                        "code": "TASK_ERROR",
+                        "task_name": task_name,
+                        "error": str(e),
+                        "level": "error",
+                        "message": f"Background task '{task_name}' failed: {e}"
+                    })
+                except Exception:
+                    pass  # Don't fail the error handler itself
+        
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(_wrapped(), name=f"safe-{task_name}")
+        except RuntimeError:
+            logger.warning(f"[AsyncTask:{task_name}] No running event loop — skipping background task")
+            return None
     
     async def _ensure_redis(self):
         """確保 Redis 已初始化（懶連接）"""
@@ -181,11 +215,48 @@ class ChatService:
         )
     
     # ========================================
-    # 會話管理
+    # 會話管理 (atomic with lock + timeout)
     # ========================================
     
+    async def get_or_create_conversation_async(
+        self,
+        conversation_id: Optional[str] = None,
+        timeout: float = 180.0
+    ) -> str:
+        """
+        Atomic conversation creation with lock.
+        
+        If the lock is held for > timeout seconds (default 180s / 3 min),
+        a TimeoutError is raised — the UI should catch this and prompt
+        the user whether to continue waiting or reset.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._conversation_lock:
+                    return self._create_conversation_internal(conversation_id)
+        except TimeoutError:
+            # Broadcast timeout event to UI
+            try:
+                await self.ws_manager.broadcast({
+                    "type": "conversation_timeout",
+                    "code": "CONVERSATION_QUEUE_TIMEOUT",
+                    "level": "warning",
+                    "message": "Conversation creation queue exceeded 3 minutes. Continue or reset?",
+                    "timeout_seconds": timeout,
+                })
+            except Exception:
+                pass
+            raise TimeoutError(
+                f"Conversation creation timed out after {timeout}s. "
+                "The server is under heavy load."
+            )
+    
     def get_or_create_conversation(self, conversation_id: Optional[str] = None) -> str:
-        """獲取或創建會話 ID"""
+        """Sync version — for backward compatibility. Uses lock when event loop is available."""
+        return self._create_conversation_internal(conversation_id)
+    
+    def _create_conversation_internal(self, conversation_id: Optional[str] = None) -> str:
+        """Internal: actually create the conversation (must be called under lock or from sync context)."""
         if conversation_id is None:
             conversation_id = str(uuid.uuid4())
         
@@ -197,7 +268,7 @@ class ChatService:
         
         # 確保 Redis 中也有記錄
         if self.redis.is_connected:
-            asyncio.create_task(self.redis.set_conversation(conversation_id, []))
+            self._safe_create_task(self.redis.set_conversation(conversation_id, []), "redis-set-conversation")
         
         return conversation_id
     
@@ -221,7 +292,7 @@ class ChatService:
         
         # 同步到 Redis（fire-and-forget）
         if self.redis.is_connected:
-            asyncio.create_task(self.redis.append_message(conversation_id, msg_entry))
+            self._safe_create_task(self.redis.append_message(conversation_id, msg_entry), "redis-add-user-msg")
         
         # 添加到數據庫
         session_db.add_message(
@@ -273,7 +344,7 @@ class ChatService:
         
         # 同步到 Redis（fire-and-forget）
         if self.redis.is_connected:
-            asyncio.create_task(self.redis.append_message(conversation_id, msg_entry))
+            self._safe_create_task(self.redis.append_message(conversation_id, msg_entry), "redis-add-assistant-msg")
         
         # 添加到數據庫（包含 thinking_steps）
         session_db.add_message(
@@ -423,10 +494,10 @@ class ChatService:
         response: str,
         conversation_id: str
     ):
-        """以 asyncio.create_task 啟動記憶捕獲，完全非阻塞"""
-        import asyncio
-        asyncio.create_task(
-            self.capture_memory(user_id, message, response, conversation_id)
+        """以安全的 asyncio task 啟動記憶捕獲，完全非阻塞"""
+        self._safe_create_task(
+            self.capture_memory(user_id, message, response, conversation_id),
+            "memory-capture"
         )
     
     # ========================================
@@ -1045,7 +1116,7 @@ class ChatService:
             del self.conversations[conversation_id]
             # 同步刪除 Redis
             if self.redis.is_connected:
-                asyncio.create_task(self.redis.delete_conversation(conversation_id))
+                self._safe_create_task(self.redis.delete_conversation(conversation_id), "redis-delete-conversation")
             return True
         return False
     
@@ -1055,7 +1126,7 @@ class ChatService:
             self.conversations[conversation_id] = []
             # 同步清空 Redis
             if self.redis.is_connected:
-                asyncio.create_task(self.redis.set_conversation(conversation_id, []))
+                self._safe_create_task(self.redis.set_conversation(conversation_id, []), "redis-clear-conversation")
             return True
         return False
 

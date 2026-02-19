@@ -99,6 +99,15 @@ class Config:
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/1")  # Celery broker
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")  # Celery 結果儲存
     
+    # Debug Mode - 偵錯模式
+    DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"  # 偵錯模式（生產環境設 false）
+    
+    # Authentication - 驗證設定
+    AUTH_ADMIN_USER = os.getenv("AUTH_ADMIN_USER", "admin")
+    AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "")
+    AUTH_GUEST_USER = os.getenv("AUTH_GUEST_USER", "guest")
+    AUTH_GUEST_PASSWORD = os.getenv("AUTH_GUEST_PASSWORD", "")
+    
     # Logging - 日誌設定
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # 日誌等級
     LOG_FORMAT = os.getenv(
