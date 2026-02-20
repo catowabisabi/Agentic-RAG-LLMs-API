@@ -30,10 +30,12 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from enum import Enum
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel, Field
 
-from services.chat_service import get_chat_service, ChatMode
+from services.chat_service import ChatMode
+from fast_api.dependencies import get_chat
+from services.chat_service import ChatService
 from agents.shared_services.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -77,8 +79,7 @@ class ChatMessage(BaseModel):
 # WebSocket Endpoint
 # ========================================
 
-@router.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
+@router.websocket(\"/ws/chat\")\nasync def websocket_chat(websocket: WebSocket, chat_service: ChatService = Depends(get_chat)):
     """
     WebSocket 聊天端點
     
@@ -89,7 +90,6 @@ async def websocket_chat(websocket: WebSocket):
     - 心跳保持
     """
     ws_manager = WebSocketManager()
-    chat_service = get_chat_service()
     
     session_id = str(uuid.uuid4())
     current_task_id = None

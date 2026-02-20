@@ -13,12 +13,13 @@ import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from pydantic import BaseModel, Field
 
 from tools.retriever import DocumentRetriever
 from services.document_loader import DocumentLoader
-from services.vectordb_manager import vectordb_manager
+from fast_api.dependencies import get_vdb
+from services.interfaces import IVectorDBService
 from utils.path_security import (
     validate_collection_name,
     validate_db_name,

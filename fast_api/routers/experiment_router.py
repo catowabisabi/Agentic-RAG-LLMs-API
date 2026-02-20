@@ -17,8 +17,11 @@ import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
+
+from fast_api.dependencies import get_llm, get_vdb
+from services.interfaces import ILLMService, IVectorDBService
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,11 @@ class RAGResult(BaseModel):
 # ============== Fast RAG: 2 LLM calls only ==============
 
 @router.post("/fast-rag", response_model=RAGResult)
-async def fast_rag_query(request: FastRAGRequest):
+async def fast_rag_query(
+    request: FastRAGRequest,
+    llm_service: ILLMService = Depends(get_llm),
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
+):
     """
     Fast RAG Pipeline — Only 2 LLM calls:
     1. DB routing (select relevant DBs via Skills)
@@ -76,10 +83,6 @@ async def fast_rag_query(request: FastRAGRequest):
     llm_calls = 0
     
     try:
-        from services.vectordb_manager import vectordb_manager
-        from services.llm_service import get_llm_service
-        
-        llm_service = get_llm_service()
         
         # === LLM Call 1: Route to relevant DBs ===
         targeted_dbs = request.db_names
@@ -187,7 +190,10 @@ Answer:"""
 # ============== Hybrid BM25 + Vector Search ==============
 
 @router.post("/hybrid-search", response_model=RAGResult)
-async def hybrid_search(request: HybridSearchRequest):
+async def hybrid_search(
+    request: HybridSearchRequest,
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
+):
     """
     Hybrid BM25 + Vector search — combines lexical and semantic matching.
     
@@ -200,7 +206,6 @@ async def hybrid_search(request: HybridSearchRequest):
     start = time.time()
     
     try:
-        from services.vectordb_manager import vectordb_manager
         
         # Determine which DBs to search
         if request.db_name:
@@ -295,7 +300,11 @@ async def hybrid_search(request: HybridSearchRequest):
 # ============== Compare All Strategies ==============
 
 @router.post("/compare")
-async def compare_strategies(request: CompareRequest):
+async def compare_strategies(
+    request: CompareRequest,
+    llm_service: ILLMService = Depends(get_llm),
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
+):
     """
     Run the same query through multiple strategies and return timing + results for comparison.
     
@@ -311,7 +320,7 @@ async def compare_strategies(request: CompareRequest):
         fast_result = await fast_rag_query(FastRAGRequest(
             query=request.query,
             top_k=request.top_k
-        ))
+        ), llm_service=llm_service, vectordb_manager=vectordb_manager)
         results["fast_rag"] = fast_result.model_dump()
     except Exception as e:
         results["fast_rag"] = {"error": str(e)}
@@ -321,14 +330,13 @@ async def compare_strategies(request: CompareRequest):
         hybrid_result = await hybrid_search(HybridSearchRequest(
             query=request.query,
             top_k=request.top_k
-        ))
+        ), vectordb_manager=vectordb_manager)
         results["hybrid_bm25_vector"] = hybrid_result.model_dump()
     except Exception as e:
         results["hybrid_bm25_vector"] = {"error": str(e)}
     
     # Strategy 3: Vector-only with reranking
     try:
-        from services.vectordb_manager import vectordb_manager
         start = time.time()
         
         db_list = vectordb_manager.list_databases()

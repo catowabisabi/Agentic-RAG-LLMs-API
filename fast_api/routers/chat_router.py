@@ -23,11 +23,14 @@ import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from services.chat_service import get_chat_service, ChatMode
+from services.chat_service import ChatMode
+from fast_api.dependencies import get_chat, get_llm, get_rag
+from services.chat_service import ChatService
+from services.interfaces import ILLMService, IRAGService
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +89,7 @@ class TaskStatusResponse(BaseModel):
 
 @router.post("/send", response_model=ChatResponse | AsyncChatResponse)
 @router.post("/message", response_model=ChatResponse | AsyncChatResponse, include_in_schema=False)  # Alias for backward compatibility
-async def send_message(request: ChatRequest):
+async def send_message(request: ChatRequest, chat_service: ChatService = Depends(get_chat)):
     """
     發送消息並獲取響應
     
@@ -96,7 +99,6 @@ async def send_message(request: ChatRequest):
     
     異步模式：輪詢 /chat/task/{task_id} 獲取狀態，或通過 WebSocket 監聽更新
     """
-    chat_service = get_chat_service()
     
     try:
         # ============================================
@@ -175,7 +177,7 @@ class AgenticChatResponse(BaseModel):
 
 
 @router.post("/agentic", response_model=AgenticChatResponse)
-async def send_agentic_message(request: AgenticChatRequest):
+async def send_agentic_message(request: AgenticChatRequest, chat_service: ChatService = Depends(get_chat)):
     """
     使用 Agentic Loop Engine 處理消息
     
@@ -187,7 +189,6 @@ async def send_agentic_message(request: AgenticChatRequest):
     
     NOTE: 測試模式 - 錯誤直接傳播，不使用 fallback
     """
-    chat_service = get_chat_service()
     
     try:
         result = await chat_service.process_message_agentic(
@@ -223,20 +224,21 @@ async def send_agentic_message(request: AgenticChatRequest):
 # ========================================
 
 @router.post("/stream")
-async def stream_message(request: ChatRequest):
+async def stream_message(
+    request: ChatRequest,
+    chat_service: ChatService = Depends(get_chat),
+    llm_service: ILLMService = Depends(get_llm),
+    rag_service: IRAGService = Depends(get_rag),
+):
     """
     Streaming 模式 - 真正的 Token-by-Token 串流
     
     使用 LLM provider 的原生串流 API，逐 token 返回。
     如果需要 RAG 上下文，先獲取上下文再串流 LLM 回應。
     """
-    chat_service = get_chat_service()
-    
     async def generate_stream():
         """生成 SSE 串流"""
         try:
-            from services.llm_service import get_llm_service
-            llm_service = get_llm_service()
             
             # Get or create conversation
             conversation_id = request.conversation_id or chat_service.get_or_create_conversation()
@@ -247,8 +249,6 @@ async def stream_message(request: ChatRequest):
             
             if request.use_rag:
                 try:
-                    from services.rag_service import get_rag_service
-                    rag_service = get_rag_service()
                     rag_result = await rag_service.query(request.message)
                     if rag_result and rag_result.get("context"):
                         system_message += f"\n\nRelevant context:\n{rag_result['context']}"
@@ -302,6 +302,10 @@ async def _process_async_task(task_id: str, request: ChatRequest):
     from services.task_manager import task_manager
     
     chat_service = get_chat_service()
+
+
+# Keep a local reference for internal helper use
+from services.chat_service import get_chat_service
     
     async def _task_handler(tid: str):
         """Handler that accepts task_id from task_manager"""
@@ -323,9 +327,8 @@ async def _process_async_task(task_id: str, request: ChatRequest):
 # ========================================
 
 @router.get("/conversations")
-async def list_conversations():
+async def list_conversations(chat_service: ChatService = Depends(get_chat)):
     """列出所有會話"""
-    chat_service = get_chat_service()
     try:
         conversations = chat_service.list_conversations()
         return {
@@ -339,9 +342,8 @@ async def list_conversations():
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, chat_service: ChatService = Depends(get_chat)):
     """獲取會話詳情"""
-    chat_service = get_chat_service()
     try:
         conversation = chat_service.get_conversation(conversation_id)
         if conversation is None:
@@ -355,9 +357,8 @@ async def get_conversation(conversation_id: str):
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
+async def delete_conversation(conversation_id: str, chat_service: ChatService = Depends(get_chat)):
     """刪除會話"""
-    chat_service = get_chat_service()
     try:
         success = chat_service.delete_conversation(conversation_id)
         if not success:
@@ -371,9 +372,8 @@ async def delete_conversation(conversation_id: str):
 
 
 @router.post("/conversations/{conversation_id}/clear")
-async def clear_conversation(conversation_id: str):
+async def clear_conversation(conversation_id: str, chat_service: ChatService = Depends(get_chat)):
     """清空會話消息"""
-    chat_service = get_chat_service()
     try:
         success = chat_service.clear_conversation(conversation_id)
         if not success:
@@ -391,9 +391,8 @@ async def clear_conversation(conversation_id: str):
 # ========================================
 
 @router.get("/task/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str, chat_service: ChatService = Depends(get_chat)):
     """獲取任務狀態（用於異步模式輪詢）"""
-    chat_service = get_chat_service()
     try:
         task = chat_service.get_task_status(task_id)
         if not task:
@@ -418,9 +417,8 @@ async def get_task_status(task_id: str):
 
 
 @router.get("/task/{task_id}/result")
-async def get_task_result(task_id: str):
+async def get_task_result(task_id: str, chat_service: ChatService = Depends(get_chat)):
     """獲取任務結果（僅當任務完成時）"""
-    chat_service = get_chat_service()
     try:
         task = chat_service.get_task_status(task_id)
         if not task:
@@ -446,9 +444,8 @@ async def get_task_result(task_id: str):
 
 
 @router.post("/task/{task_id}/cancel")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, chat_service: ChatService = Depends(get_chat)):
     """取消正在執行的任務"""
-    chat_service = get_chat_service()
     try:
         success = chat_service.cancel_task(task_id)
         if not success:
