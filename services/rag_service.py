@@ -186,14 +186,24 @@ class RAGService:
             strategy = self._auto_select_strategy(query, databases)
         
         # 執行查詢
-        if strategy == RAGStrategy.SINGLE_DB:
-            result = await self._query_single(query, databases[0], top_k, threshold)
-        elif strategy == RAGStrategy.MULTI_DB:
-            result = await self._query_multi(query, databases, top_k, threshold)
-        elif strategy == RAGStrategy.SMART_ROUTING:
-            result = await self._smart_routing(query, databases, top_k, threshold)
-        else:
-            result = await self._query_multi(query, databases, top_k, threshold)
+        try:
+            if strategy == RAGStrategy.SINGLE_DB:
+                result = await self._query_single(query, databases[0], top_k, threshold)
+            elif strategy == RAGStrategy.MULTI_DB:
+                result = await self._query_multi(query, databases, top_k, threshold)
+            elif strategy == RAGStrategy.SMART_ROUTING:
+                result = await self._smart_routing(query, databases, top_k, threshold)
+            else:
+                result = await self._query_multi(query, databases, top_k, threshold)
+        except Exception as e:
+            logger.error(f"[RAGService] Query failed: {e}")
+            domain_event_bus.publish(
+                RAGQueryFailed(
+                    query_preview=query[:120],
+                    error=str(e),
+                )
+            )
+            raise
         
         # 保存到快取
         if use_cache and self.cache:

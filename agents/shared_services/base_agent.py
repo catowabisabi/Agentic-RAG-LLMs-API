@@ -75,6 +75,9 @@ try:
     HAS_INTERFACES = True
 except ImportError:
     HAS_INTERFACES = False
+    # Fallback: define aliases so type hints don't break under runtime introspection
+    from typing import Any as ILLMService  # type: ignore[assignment,misc]
+    IRAGService = ILLMService  # type: ignore[assignment,misc]
 
 # Type-only imports for concrete classes (used only under TYPE_CHECKING)
 if TYPE_CHECKING:

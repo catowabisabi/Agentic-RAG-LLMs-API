@@ -62,6 +62,12 @@ from .unified_event_manager import (
     UnifiedEvent
 )
 
+# New modules — intentionally NOT eagerly imported here to avoid
+# circular import chains.  Use explicit imports instead:
+#   from services.container import container, bootstrap
+#   from services.domain_events import domain_event_bus
+#   from services.interfaces import ILLMService, IRAGService, ...
+
 __all__ = [
     # VectorDB
     'VectorDBManager',
