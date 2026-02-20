@@ -27,6 +27,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from config.config import Config
+from services.domain_events import (
+    domain_event_bus,
+    LLMCallCompleted,
+    LLMCallFailed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +305,17 @@ class LLMService:
             cached_response = self.cache.get(request)
             if cached_response:
                 logger.debug("[LLMService] Cache hit")
+                domain_event_bus.publish(
+                    LLMCallCompleted(
+                        agent_name="llm_service",
+                        model=request.model,
+                        prompt_tokens=cached_response.usage.prompt_tokens,
+                        completion_tokens=cached_response.usage.completion_tokens,
+                        cost=cached_response.usage.cost,
+                        cached=True,
+                        session_id=session_id,
+                    )
+                )
                 return cached_response
         
         # 準備消息
@@ -351,11 +367,32 @@ class LLMService:
             # 保存到快取
             if use_cache and self.cache:
                 self.cache.set(request, response)
-            
+
+            # 發布領域事件
+            domain_event_bus.publish(
+                LLMCallCompleted(
+                    agent_name="llm_service",
+                    model=request.model,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cost=usage.cost,
+                    cached=False,
+                    session_id=session_id,
+                )
+            )
+
             return response
             
         except Exception as e:
             logger.error(f"[LLMService] Generation failed: {e}")
+            domain_event_bus.publish(
+                LLMCallFailed(
+                    agent_name="llm_service",
+                    model=request.model,
+                    error=str(e),
+                    session_id=session_id,
+                )
+            )
             
             # Check if this is an API key error
             error_str = str(e)

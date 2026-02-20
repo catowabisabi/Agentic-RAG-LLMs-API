@@ -12,6 +12,7 @@ RAG Service - 統一的 RAG 查詢服務
     result = await rag_service.query("What is RAG?", strategy=RAGStrategy.AUTO)
 """
 
+import asyncio
 import logging
 import hashlib
 from typing import Dict, Any, List, Optional
@@ -21,6 +22,11 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from services.vectordb_manager import vectordb_manager
+from services.domain_events import (
+    domain_event_bus,
+    RAGQueryCompleted,
+    RAGQueryFailed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +169,16 @@ class RAGService:
             cached_result = self.cache.get(query, databases)
             if cached_result:
                 logger.debug("[RAGService] Cache hit")
+                domain_event_bus.publish(
+                    RAGQueryCompleted(
+                        query_preview=query[:120],
+                        databases=databases,
+                        result_count=cached_result.total_results,
+                        avg_relevance=cached_result.avg_relevance,
+                        strategy_used=cached_result.strategy_used,
+                        cached=True,
+                    )
+                )
                 return cached_result
         
         # 策略選擇
@@ -182,7 +198,19 @@ class RAGService:
         # 保存到快取
         if use_cache and self.cache:
             self.cache.set(query, databases, result)
-        
+
+        # 發布領域事件
+        domain_event_bus.publish(
+            RAGQueryCompleted(
+                query_preview=query[:120],
+                databases=databases,
+                result_count=result.total_results,
+                avg_relevance=result.avg_relevance,
+                strategy_used=result.strategy_used,
+                cached=False,
+            )
+        )
+
         return result
     
     async def _get_active_databases(self) -> List[str]:
@@ -246,27 +274,38 @@ class RAGService:
         threshold: float
     ) -> RAGResult:
         """
-        多數據庫並行查詢
-        
-        這是從 chat_router.py::get_rag_context() 提取的邏輯
+        多數據庫平行查詢 (asyncio.gather 版本)
+
+        原本的 for-loop 是逐一等待每個 DB 回應，N 個 DB 各需 T 毫秒則
+        總延遲為 N×T。改用 asyncio.gather() 後所有 DB 同時查詢，
+        總延遲接近 max(T_i)，通常大幅縮短整體等待時間。
         """
-        all_sources = []
-        queried_dbs = []
-        
-        # 查詢每個數據庫
-        for db_name in databases:
+
+        async def _query_single(db_name: str):
+            """查詢單一 DB，返回 (db_name, sources) 或 None（失敗時）"""
             try:
                 result = await self.db_manager.query(query, db_name, n_results=top_k)
                 sources = self._extract_sources(result, db_name, threshold)
-                
+                return db_name, sources
+            except Exception as e:
+                logger.warning(f"[RAGService] Error querying {db_name}: {e}")
+                return None
+
+        # 同時發射所有 DB 查詢
+        raw_results = await asyncio.gather(
+            *[_query_single(db) for db in databases],
+            return_exceptions=False   # 異常已在 _query_single 內部處理
+        )
+
+        all_sources = []
+        queried_dbs = []
+        for item in raw_results:
+            if item is not None:
+                db_name, sources = item
                 if sources:
                     all_sources.extend(sources)
                     queried_dbs.append(db_name)
-                    
-            except Exception as e:
-                logger.warning(f"[RAGService] Error querying {db_name}: {e}")
-                continue
-        
+
         # 去重與排序
         all_sources = self._deduplicate_sources(all_sources)
         all_sources = sorted(all_sources, key=lambda x: x.relevance, reverse=True)

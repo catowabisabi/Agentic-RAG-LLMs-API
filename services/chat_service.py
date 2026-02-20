@@ -48,6 +48,10 @@ from services.unified_event_manager import (
 from agents.core.agentic_loop_engine import AgenticLoopEngine, create_agentic_loop
 from agents.core.agentic_task_queue import TodoTask, TodoStatus
 
+# ChatService sub-managers (God Class split)
+from services.chat.conversation_manager import ConversationManager
+from services.chat.message_manager import MessageManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,9 +108,27 @@ class ChatService:
         
         # Architecture V2: Agentic Loop Engine (初始化時不創建，按需創建)
         self._agentic_loop: Optional[AgenticLoopEngine] = None
-        
+
         # 嘗試連接 Redis
         self._redis_initialized = False
+
+        # ── Sub-managers (God Class split) ────────────────────────────────────
+        self.conv_mgr = ConversationManager(
+            conversations=self.conversations,
+            conversation_lock=self._conversation_lock,
+            redis_service=self.redis,
+            ws_manager=self.ws_manager,
+            config=self.config,
+            session_db=session_db,
+            safe_create_task_fn=self._safe_create_task,
+        )
+        self.msg_mgr = MessageManager(
+            conversations=self.conversations,
+            redis_service=self.redis,
+            config=self.config,
+            session_db=session_db,
+            safe_create_task_fn=self._safe_create_task,
+        )
     
     def _safe_create_task(self, coro, task_name: str = "background"):
         """
@@ -218,181 +240,62 @@ class ChatService:
     # 會話管理 (atomic with lock + timeout)
     # ========================================
     
+    # ── 會話管理 → 委派至 ConversationManager ═══════════════════════════════
+
     async def get_or_create_conversation_async(
         self,
         conversation_id: Optional[str] = None,
-        timeout: float = 180.0
+        timeout: float = 180.0,
     ) -> str:
-        """
-        Atomic conversation creation with lock.
-        
-        If the lock is held for > timeout seconds (default 180s / 3 min),
-        a TimeoutError is raised — the UI should catch this and prompt
-        the user whether to continue waiting or reset.
-        """
-        try:
-            async with asyncio.timeout(timeout):
-                async with self._conversation_lock:
-                    return self._create_conversation_internal(conversation_id)
-        except TimeoutError:
-            # Broadcast timeout event to UI
-            try:
-                await self.ws_manager.broadcast({
-                    "type": "conversation_timeout",
-                    "code": "CONVERSATION_QUEUE_TIMEOUT",
-                    "level": "warning",
-                    "message": "Conversation creation queue exceeded 3 minutes. Continue or reset?",
-                    "timeout_seconds": timeout,
-                })
-            except Exception:
-                pass
-            raise TimeoutError(
-                f"Conversation creation timed out after {timeout}s. "
-                "The server is under heavy load."
-            )
-    
+        """Atomic conversation creation — delegates to ConversationManager"""
+        return await self.conv_mgr.get_or_create_async(conversation_id, timeout)
+
     def get_or_create_conversation(self, conversation_id: Optional[str] = None) -> str:
-        """Sync version — for backward compatibility. Uses lock when event loop is available."""
-        return self._create_conversation_internal(conversation_id)
-    
+        """Sync conversation creation — delegates to ConversationManager"""
+        return self.conv_mgr.get_or_create(conversation_id)
+
     def _create_conversation_internal(self, conversation_id: Optional[str] = None) -> str:
-        """Internal: actually create the conversation (must be called under lock or from sync context)."""
-        if conversation_id is None:
-            conversation_id = str(uuid.uuid4())
-        
-        if conversation_id not in self.conversations:
-            self.conversations[conversation_id] = []
-        
-        # 確保 SessionDB 中也有記錄
-        session_db.get_or_create_session(conversation_id, "Chat Session")
-        
-        # 確保 Redis 中也有記錄
-        if self.redis.is_connected:
-            self._safe_create_task(self.redis.set_conversation(conversation_id, []), "redis-set-conversation")
-        
-        return conversation_id
+        """Internal creation helper — delegates to ConversationManager"""
+        return self.conv_mgr._create_internal(conversation_id)
     
+    # ── 消息管理 → 委派至 MessageManager ════════════════════════════════════
+
     def add_user_message(
         self,
         conversation_id: str,
         message: str,
-        task_uid: Optional[str] = None
+        task_uid: Optional[str] = None,
     ) -> str:
-        """添加用戶消息到歷史"""
-        message_id = str(uuid.uuid4())
-        
-        # 添加到內存
-        msg_entry = {
-            "id": message_id,
-            "role": "user",
-            "content": message,
-            "timestamp": datetime.now().isoformat()
-        }
-        self.conversations[conversation_id].append(msg_entry)
-        
-        # 同步到 Redis（fire-and-forget）
-        if self.redis.is_connected:
-            self._safe_create_task(self.redis.append_message(conversation_id, msg_entry), "redis-add-user-msg")
-        
-        # 添加到數據庫
-        session_db.add_message(
-            session_id=conversation_id,
-            role="user",
-            content=message,
-            task_uid=task_uid
-        )
-        
-        return message_id
-    
+        """添加用戶消息 — delegates to MessageManager"""
+        return self.msg_mgr.add_user_message(conversation_id, message, task_uid)
+
     def add_assistant_message(
         self,
         conversation_id: str,
         message: str,
         task_uid: Optional[str] = None,
         agents_involved: List[str] = None,
-        sources: List[Dict] = None
+        sources: List[Dict] = None,
     ) -> str:
-        """添加助手消息到歷史"""
-        message_id = str(uuid.uuid4())
-        
-        # 從 SessionDB 獲取此任務的處理步驟
-        thinking_steps = None
-        if task_uid:
-            try:
-                steps = session_db.get_task_steps(task_uid)
-                if steps:
-                    thinking_steps = [
-                        {
-                            "step_type": s.get("step_type"),
-                            "agent_name": s.get("agent_name"),
-                            "content": s.get("content"),
-                            "timestamp": s.get("timestamp")
-                        }
-                        for s in steps
-                    ]
-            except Exception as e:
-                logger.warning(f"Failed to get task steps: {e}")
-        
-        # 添加到內存
-        msg_entry = {
-            "id": message_id,
-            "role": "assistant",
-            "content": message,
-            "timestamp": datetime.now().isoformat()
-        }
-        self.conversations[conversation_id].append(msg_entry)
-        
-        # 同步到 Redis（fire-and-forget）
-        if self.redis.is_connected:
-            self._safe_create_task(self.redis.append_message(conversation_id, msg_entry), "redis-add-assistant-msg")
-        
-        # 添加到數據庫（包含 thinking_steps）
-        session_db.add_message(
-            session_id=conversation_id,
-            role="assistant",
-            content=message,
-            task_uid=task_uid,
-            agents_involved=agents_involved,
-            sources=sources,
-            thinking_steps=thinking_steps
+        """添加助手消息 — delegates to MessageManager"""
+        return self.msg_mgr.add_assistant_message(
+            conversation_id, message, task_uid, agents_involved, sources
         )
-        
-        return message_id
-    
+
     def get_conversation_history(
         self,
         conversation_id: str,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
     ) -> List[Dict]:
-        """獲取會話歷史"""
-        if limit is None:
-            limit = self.config.MEMORY_WINDOW * 2
-        
-        # 從 SessionDB 獲取持久化的消息
-        previous_messages = session_db.get_session_messages(conversation_id, limit=limit)
-        
-        chat_history = []
-        for msg in previous_messages:
-            if msg.get("role") == "user":
-                chat_history.append({"human": msg.get("content", "")})
-            elif msg.get("role") == "assistant":
-                if chat_history and "assistant" not in chat_history[-1]:
-                    chat_history[-1]["assistant"] = msg.get("content", "")
-                else:
-                    chat_history.append({"assistant": msg.get("content", "")})
-        
-        # 保持在窗口大小內
-        if len(chat_history) > self.config.MEMORY_WINDOW:
-            chat_history = chat_history[-self.config.MEMORY_WINDOW:]
-        
-        return chat_history
-    
+        """獲取會話歷史 — delegates to MessageManager"""
+        return self.msg_mgr.get_conversation_history(conversation_id, limit)
+
     # ========================================
     # RAG 整合
     # ========================================
     
     async def get_rag_context(self, query: str) -> Tuple[str, List[Dict]]:
-        """查詢所有 RAG 數據庫並返回相關上下文"""
+        """查詢所有 RAG 數據庫並返回相關上下文（平行查詢版本）"""
         try:
             # 獲取數據庫列表並過濾非空數據庫
             db_list = vectordb_manager.list_databases()
@@ -401,37 +304,46 @@ class ChatService:
             if not active_dbs:
                 logger.warning("No non-empty databases found for RAG query")
                 return "", []
-            
-            all_sources = []
-            all_contexts = []
-            
-            # 查詢每個數據庫
-            for db_name in active_dbs:
+
+            async def _query_one_db(db_name: str):
+                """查詢單一 DB，失敗時回傳 None"""
                 try:
                     results = await vectordb_manager.query(
                         query=query,
                         db_name=db_name,
                         n_results=3
                     )
-                    
                     if results and "documents" in results and results["documents"]:
                         docs = results["documents"][0]
                         metadatas = results.get("metadatas", [[]])[0]
                         distances = results.get("distances", [[]])[0]
-                        
-                        for i, (doc, meta, dist) in enumerate(zip(docs, metadatas, distances)):
-                            all_contexts.append(doc)
-                            all_sources.append({
-                                "database": db_name,
-                                "content": doc[:300],
-                                "metadata": meta,
-                                "relevance_score": float(1 - dist) if dist else 0.0,
-                                "rank": len(all_sources) + 1
-                            })
+                        items = []
+                        for doc, meta, dist in zip(docs, metadatas, distances):
+                            items.append((db_name, doc, meta, dist))
+                        return items
+                    return []
                 except Exception as db_error:
                     logger.error(f"Error querying database {db_name}: {db_error}")
-                    continue
-            
+                    return []
+
+            # 所有 DB 同時查詢
+            per_db_results = await asyncio.gather(
+                *[_query_one_db(db) for db in active_dbs]
+            )
+
+            all_sources = []
+            all_contexts = []
+            for db_items in per_db_results:
+                for (db_name, doc, meta, dist) in db_items:
+                    all_contexts.append(doc)
+                    all_sources.append({
+                        "database": db_name,
+                        "content": doc[:300],
+                        "metadata": meta,
+                        "relevance_score": float(1 - dist) if dist else 0.0,
+                        "rank": len(all_sources) + 1
+                    })
+
             # 合併上下文
             if all_contexts:
                 combined_context = "\n\n---\n\n".join(all_contexts[:10])
@@ -1085,50 +997,23 @@ class ChatService:
         """取消任務"""
         return task_manager.cancel_task(task_id)
     
-    # ========================================
-    # 會話管理端點
-    # ========================================
-    
+    # ── 會話管理端點 → 委派至 ConversationManager ════════════════════════════
+
     def list_conversations(self) -> List[Dict[str, Any]]:
-        """列出所有會話"""
-        return [
-            {
-                "conversation_id": conv_id,
-                "message_count": len(messages),
-                "last_message": messages[-1] if messages else None
-            }
-            for conv_id, messages in self.conversations.items()
-        ]
-    
+        """列出所有會話 — delegates to ConversationManager"""
+        return self.conv_mgr.list_conversations()
+
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
-        """獲取會話詳情"""
-        if conversation_id not in self.conversations:
-            return None
-        
-        return {
-            "conversation_id": conversation_id,
-            "messages": self.conversations[conversation_id]
-        }
-    
+        """獲取會話詳情 — delegates to ConversationManager"""
+        return self.conv_mgr.get_conversation(conversation_id)
+
     def delete_conversation(self, conversation_id: str) -> bool:
-        """刪除會話"""
-        if conversation_id in self.conversations:
-            del self.conversations[conversation_id]
-            # 同步刪除 Redis
-            if self.redis.is_connected:
-                self._safe_create_task(self.redis.delete_conversation(conversation_id), "redis-delete-conversation")
-            return True
-        return False
-    
+        """刪除會話 — delegates to ConversationManager"""
+        return self.conv_mgr.delete_conversation(conversation_id)
+
     def clear_conversation(self, conversation_id: str) -> bool:
-        """清空會話消息"""
-        if conversation_id in self.conversations:
-            self.conversations[conversation_id] = []
-            # 同步清空 Redis
-            if self.redis.is_connected:
-                self._safe_create_task(self.redis.set_conversation(conversation_id, []), "redis-clear-conversation")
-            return True
-        return False
+        """清空會話消息 — delegates to ConversationManager"""
+        return self.conv_mgr.clear_conversation(conversation_id)
 
 
 # ========================================

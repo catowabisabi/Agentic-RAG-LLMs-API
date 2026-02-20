@@ -69,7 +69,14 @@ except ImportError:
     HAS_EVENT_BUS = False
     event_bus = None
 
-# Type-only imports for type hints
+# Service interface imports (structural typing — no inheritance required)
+try:
+    from services.interfaces import ILLMService, IRAGService
+    HAS_INTERFACES = True
+except ImportError:
+    HAS_INTERFACES = False
+
+# Type-only imports for concrete classes (used only under TYPE_CHECKING)
 if TYPE_CHECKING:
     from services.llm_service import LLMService
     from services.rag_service import RAGService
@@ -114,10 +121,10 @@ class BaseAgent(ABC):
         agent_name: str,
         agent_role: str,
         agent_description: str = "",
-        llm_service: Optional["LLMService"] = None,
-        rag_service: Optional["RAGService"] = None,
-        broadcast_service: Optional["BroadcastService"] = None,
-        prompt_manager: Optional["PromptManager"] = None
+        llm_service: Optional[ILLMService] = None,
+        rag_service: Optional[IRAGService] = None,
+        broadcast_service: Optional[BroadcastService] = None,
+        prompt_manager: Optional[PromptManager] = None
     ):
         self.agent_name = agent_name
         self.agent_role = agent_role

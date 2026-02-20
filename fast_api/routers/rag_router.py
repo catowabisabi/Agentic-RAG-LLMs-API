@@ -19,10 +19,39 @@ from pydantic import BaseModel, Field
 from tools.retriever import DocumentRetriever
 from services.document_loader import DocumentLoader
 from services.vectordb_manager import vectordb_manager
+from utils.path_security import (
+    validate_collection_name,
+    validate_db_name,
+    validate_backup_filename,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+
+def _require_safe_collection(name: str) -> str:
+    """Validate collection name and raise HTTP 400 if invalid."""
+    try:
+        return validate_collection_name(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _require_safe_db(name: str) -> str:
+    """Validate database name and raise HTTP 400 if invalid."""
+    try:
+        return validate_db_name(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _require_safe_backup(filename: str) -> str:
+    """Validate backup filename and raise HTTP 400 if invalid."""
+    try:
+        return validate_backup_filename(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 class QueryRequest(BaseModel):
@@ -389,6 +418,7 @@ async def get_collection_info(collection_name: str):
 @router.delete("/collections/{collection_name}")
 async def delete_collection(collection_name: str):
     """Delete a collection"""
+    collection_name = _require_safe_collection(collection_name)
     try:
         loader = DocumentLoader()
         loader.delete_collection(collection_name)
@@ -647,6 +677,7 @@ async def list_backups():
 @router.post("/databases/restore/{backup_filename}")
 async def restore_backup(backup_filename: str):
     """Restore from a backup. Creates a safety backup first."""
+    backup_filename = _require_safe_backup(backup_filename)
     try:
         result = vectordb_manager.restore_backup(backup_filename)
         return {
@@ -678,9 +709,14 @@ async def consolidate_databases():
 async def download_backup(backup_filename: str):
     """Download a backup file"""
     from fastapi.responses import FileResponse
-    
+    from utils.path_security import sanitize_path
+
+    backup_filename = _require_safe_backup(backup_filename)
     backup_dir = vectordb_manager._get_backup_dir()
-    backup_path = backup_dir / backup_filename
+    try:
+        backup_path = sanitize_path(backup_filename, allowed_root=backup_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid backup filename.")
     
     if not backup_path.exists():
         raise HTTPException(status_code=404, detail=f"Backup file not found: {backup_filename}")
@@ -697,6 +733,7 @@ async def download_backup(backup_filename: str):
 @router.get("/databases/{db_name}")
 async def get_database_info(db_name: str):
     """Get information about a specific database"""
+    db_name = _require_safe_db(db_name)
     try:
         info = vectordb_manager.get_database_info(db_name)
         if not info:
@@ -715,6 +752,7 @@ async def get_database_info(db_name: str):
 @router.post("/databases/{db_name}/activate")
 async def switch_database(db_name: str):
     """Switch to a different active database"""
+    db_name = _require_safe_db(db_name)
     try:
         vectordb_manager.switch_database(db_name)
         return {
@@ -732,6 +770,7 @@ async def switch_database(db_name: str):
 @router.delete("/databases/{db_name}")
 async def delete_database(db_name: str):
     """Delete a vector database"""
+    db_name = _require_safe_db(db_name)
     try:
         vectordb_manager.delete_database(db_name)
         return {
@@ -867,6 +906,7 @@ async def upload_to_database(
 @router.get("/databases/{db_name}/documents")
 async def list_database_documents(db_name: str, limit: int = 100, offset: int = 0):
     """List all documents in a database with their content preview"""
+    db_name = _require_safe_db(db_name)
     try:
         info = vectordb_manager.get_database_info(db_name)
         if not info:
@@ -921,6 +961,7 @@ async def list_database_documents(db_name: str, limit: int = 100, offset: int = 
 @router.delete("/databases/{db_name}/documents/{doc_id}")
 async def delete_document(db_name: str, doc_id: str):
     """Delete a specific document from a database"""
+    db_name = _require_safe_db(db_name)
     try:
         collection = vectordb_manager._get_collection(db_name)
         if not collection:

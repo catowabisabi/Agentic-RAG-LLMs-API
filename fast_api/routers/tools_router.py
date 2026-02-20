@@ -10,14 +10,29 @@ API endpoints for:
 """
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
+from utils.path_security import sanitize_path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+
+# Workspace root for OCR path sandboxing (same as FileManagerService)
+_OCR_WORKSPACE_ROOT = Path(os.getenv("FILE_MANAGER_ROOT", ".")).resolve()
+
+
+def _require_safe_file_path(file_path: str) -> str:
+    """Validate a file path is within the workspace root. Raises HTTP 400 if not."""
+    try:
+        safe = sanitize_path(file_path, allowed_root=_OCR_WORKSPACE_ROOT)
+        return str(safe)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 # ============================================================
 # Pydantic request models
@@ -245,9 +260,12 @@ async def get_audit_log(req: AuditLogRequest):
 async def ocr_file(req: OCRFileRequest):
     """Run OCR on a single file."""
     try:
+        safe_path = _require_safe_file_path(req.file_path)
         svc = _get_ocr_service()
-        result = await svc.ocr_file(req.file_path)
+        result = await svc.ocr_file(safe_path)
         return {"success": True, **result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -255,9 +273,12 @@ async def ocr_file(req: OCRFileRequest):
 async def ocr_batch(req: OCRBatchRequest):
     """Run OCR on multiple files."""
     try:
+        safe_paths = [_require_safe_file_path(p) for p in req.file_paths]
         svc = _get_ocr_service()
-        result = await svc.ocr_batch(req.file_paths)
+        result = await svc.ocr_batch(safe_paths)
         return {"success": True, **result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

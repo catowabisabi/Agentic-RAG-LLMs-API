@@ -40,6 +40,8 @@ except Exception:
 import os
 
 from config.config import Config
+from utils.path_security import validate_collection_name, sanitize_path
+from pathlib import Path
 
 
 class DocumentRetriever:
@@ -47,7 +49,8 @@ class DocumentRetriever:
     
     def __init__(self, collection_name: str = "default"):
         self.config = Config()
-        self.collection_name = collection_name
+        # Validate and sanitize collection name before use
+        self.collection_name = validate_collection_name(collection_name)
         self.embeddings = OpenAIEmbeddings(
             model=self.config.EMBEDDING_MODEL,
             api_key=self.config.OPENAI_API_KEY
@@ -58,7 +61,9 @@ class DocumentRetriever:
     def _initialize_vectorstore(self):
         """Initialize or load existing vector store"""
         try:
-            persist_directory = os.path.join(self.config.CHROMA_DB_PATH, self.collection_name)
+            # Sanitize path: ensure db stays within CHROMA_DB_PATH
+            chroma_root = Path(self.config.CHROMA_DB_PATH).resolve()
+            persist_directory = str(sanitize_path(self.collection_name, allowed_root=chroma_root))
             if os.path.exists(persist_directory):
                 self.vectorstore = Chroma(
                     persist_directory=persist_directory,
@@ -225,7 +230,7 @@ class DocumentRetriever:
             return {
                 "name": self.collection_name,
                 "document_count": collection.count(),
-                "path": os.path.join(self.config.CHROMA_DB_PATH, self.collection_name)
+                "path": str(Path(self.config.CHROMA_DB_PATH).resolve() / self.collection_name)
             }
         except Exception as e:
             return {"error": f"Error getting collection info: {e}"}

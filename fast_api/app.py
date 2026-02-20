@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from agents.shared_services.agent_registry import AgentRegistry
 from agents.shared_services.websocket_manager import WebSocketManager
+from services.container import bootstrap as _bootstrap_container
 
 # Import routers
 from fast_api.routers.websocket_router import router as websocket_router
@@ -54,60 +55,24 @@ logger = logging.getLogger(__name__)
 
 
 async def create_agents():
-    """Create and register all agents"""
-    registry = AgentRegistry()
-    
-    # Import agents
-    from agents.core.manager_agent import ManagerAgent
-    from agents.core.rag_agent import RAGAgent
-    from agents.core.memory_agent import MemoryAgent
-    from agents.core.notes_agent import NotesAgent
-    from agents.core.validation_agent import ValidationAgent
-    from agents.core.planning_agent import PlanningAgent
-    from agents.core.thinking_agent import ThinkingAgent
-    from agents.core.roles_agent import RolesAgent
-    from agents.core.casual_chat_agent import CasualChatAgent
-    from agents.core.entry_classifier import EntryClassifier
-    
-    from agents.auxiliary.data_agent import DataAgent
-    from agents.auxiliary.tool_agent import ToolAgent
-    from agents.auxiliary.summarize_agent import SummarizeAgent
-    from agents.auxiliary.translate_agent import TranslateAgent
-    from agents.auxiliary.calculation_agent import CalculationAgent
-    from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
-    from agents.auxiliary.sw_agent import SWAgent
-    
-    # Register core agents
-    await registry.register_agent(EntryClassifier())  # First-line classifier
-    await registry.register_agent(ManagerAgent())
-    await registry.register_agent(RAGAgent())
-    await registry.register_agent(MemoryAgent())
-    await registry.register_agent(NotesAgent())
-    await registry.register_agent(ValidationAgent())
-    await registry.register_agent(PlanningAgent())
-    await registry.register_agent(ThinkingAgent())
-    await registry.register_agent(RolesAgent())
-    await registry.register_agent(CasualChatAgent())
-    
-    # Register auxiliary agents
-    await registry.register_agent(DataAgent())
-    await registry.register_agent(ToolAgent())
-    await registry.register_agent(SummarizeAgent())
-    await registry.register_agent(TranslateAgent())
-    await registry.register_agent(CalculationAgent())
-    await registry.register_agent(MemoryCaptureAgent())
-    await registry.register_agent(SWAgent())
-    
-    logger.info(f"Registered {len(registry._agents)} agents")
-    
-    return registry
+    """
+    Create and register all agents.
+
+    NOTE: Delegates to agents.agent_factory — single source of truth.
+    Add new agents ONLY in agents/agent_factory.py.
+    """
+    from agents.agent_factory import create_agents as _factory_create
+    return await _factory_create()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     logger.info("Starting API server...")
-    
+
+    # Bootstrap the DI container (register interface → implementation mappings)
+    _bootstrap_container()
+
     # Create and start agents
     registry = await create_agents()
     await registry.start_all_agents()

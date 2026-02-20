@@ -52,6 +52,10 @@ try:
 except ImportError:
     _debug = None
 
+# ManagerAgent sub-modules (God Class split)
+from agents.core.query_classifier import QueryClassifier, QueryClassification
+from agents.core.quality_controller import QualityController
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +138,18 @@ class ManagerAgent(BaseAgent):
         
         # 統一事件管理器
         self._event_manager = get_event_manager() if HAS_UNIFIED_EVENTS else None
-        
+
+        # ── Sub-modules (God Class split) ────────────────────────────────────
+        self.query_classifier = QueryClassifier(
+            llm_service=self.llm_service,
+            debug_service=_debug,
+        )
+        self.quality_controller = QualityController(
+            llm_service=self.llm_service,
+            debug_service=_debug,
+            broadcast_thinking_fn=self._broadcast_thinking,
+        )
+
         logger.info("ManagerAgent initialized")
     
     async def _broadcast_thinking(self, session_id: str, content: Dict[str, Any], task_id: str = None):
@@ -162,7 +177,7 @@ class ManagerAgent(BaseAgent):
             })
     
     # ============== Manager Double-Check: Validation & Retry ==============
-    
+
     async def _manager_validate_response(
         self,
         query: str,
@@ -170,211 +185,32 @@ class ManagerAgent(BaseAgent):
         sources: list = None,
         workflow: str = "unknown",
         session_id: str = None,
-        task_id: str = None
-    ) -> Dict[str, Any]:
-        """
-        真正的 Manager 品質驗證 — 用 LLM 檢查回答是否合格。
-        
-        Manager 作為最後把關：
-        1. 回答是否真正回應了問題（不是答非所問）
-        2. 回答是否包含有害/錯誤資訊
-        3. 回答是否足夠完整
-        4. 語言是否匹配
-        
-        Returns:
-            {
-                "passed": bool,
-                "quality_score": float (0-1),
-                "issues": list of strings,
-                "suggestions": list of strings,
-                "reasoning": str,
-                "should_retry": bool,
-                "retry_hint": str or None  # 給重試時用的具體改進指示
-            }
-        """
-        try:
-            await self._broadcast_thinking(session_id, {
-                "status": "Manager double-checking response quality...",
-                "workflow": workflow
-            }, task_id)
-            
-            validation_prompt = f"""You are a strict quality control manager. Evaluate whether this response is ready to send to the user.
+        task_id: str = None,
+    ):
+        """LLM quality validation — delegates to QualityController"""
+        return await self.quality_controller.validate_response(
+            query, response_text, sources, workflow, session_id, task_id
+        )
 
-User Question: {query}
-
-Agent Response:
-{response_text[:3000]}
-
-Sources Available: {len(sources) if sources else 0}
-Workflow: {workflow}
-
-Evaluate these aspects (score 0-1 each):
-1. RELEVANCE: Does the response actually address what the user asked? (not answering a different question)
-2. COMPLETENESS: Is it sufficiently detailed? (not too vague or empty)
-3. ACCURACY_SIGNALS: Does it avoid contradictions, hedging, or hallucination signals?
-4. LANGUAGE_MATCH: Does it respond in the same language the user asked in?
-5. HARMFUL_CONTENT: Is it free from any inappropriate/harmful content?
-
-Score STRICTLY. Common failure modes:
-- Response says "I don't know" when sources were available → low relevance
-- Response repeats the question without answering → low completeness
-- Response is in English when user asked in Chinese (or vice versa) → low language match
-- Response contains "error" or system messages → fail
-
-Respond in JSON only:
-{{
-    "relevance": 0.0-1.0,
-    "completeness": 0.0-1.0,
-    "accuracy_signals": 0.0-1.0,
-    "language_match": 0.0-1.0,
-    "harmful_content_free": 0.0-1.0,
-    "overall": 0.0-1.0,
-    "passed": true/false,
-    "issues": ["issue1", ...],
-    "suggestions": ["how to fix1", ...],
-    "reasoning": "brief explanation",
-    "retry_hint": "specific instruction for retry if failed, null if passed"
-}}"""
-            
-            result = await self.llm_service.generate(
-                prompt=validation_prompt,
-                system_message="You are a quality control evaluator. Return JSON only.",
-                temperature=0.1
-            )
-            
-            import json as json_mod
-            response = result.content.strip()
-            # Clean markdown wrapping
-            if response.startswith("```"):
-                response = response.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            
-            data = json_mod.loads(response)
-            
-            overall = data.get("overall", 0.5)
-            passed = data.get("passed", overall >= 0.6)
-            
-            logger.info(f"[Manager QC] {workflow} validation: score={overall:.2f}, passed={passed}")
-            
-            if _debug:
-                _debug.record_agent_output(
-                    agent_name="manager_validation",
-                    task_id=task_id or "",
-                    output_data={
-                        "score": overall,
-                        "passed": passed,
-                        "issues": data.get("issues", []),
-                        "workflow": workflow
-                    },
-                    session_id=session_id or ""
-                )
-            
-            return {
-                "passed": passed,
-                "quality_score": overall,
-                "issues": data.get("issues", []),
-                "suggestions": data.get("suggestions", []),
-                "reasoning": data.get("reasoning", ""),
-                "should_retry": not passed and overall < 0.6,
-                "retry_hint": data.get("retry_hint")
-            }
-            
-        except Exception as e:
-            logger.warning(f"[Manager QC] Validation failed: {e}, allowing response through")
-            return {
-                "passed": True,
-                "quality_score": 0.7,
-                "issues": [f"Validation error: {str(e)}"],
-                "suggestions": [],
-                "reasoning": "Validation system error - defaulting to pass",
-                "should_retry": False,
-                "retry_hint": None
-            }
-    
     async def _manager_retry_with_feedback(
         self,
         query: str,
         original_response: str,
-        validation_result: Dict[str, Any],
+        validation_result,
         context: str = "",
         sources: list = None,
         session_id: str = None,
-        task_id: str = None
+        task_id: str = None,
     ) -> str:
-        """
-        Manager 重試 — 用 LLM 基於驗證反饋重新生成回答。
-        
-        不重跑整個 pipeline，而是用 LLM 修正已有的回答。
-        這樣既快又能針對性地修正問題。
-        """
-        try:
-            issues = validation_result.get("issues", [])
-            retry_hint = validation_result.get("retry_hint", "")
-            suggestions = validation_result.get("suggestions", [])
-            
-            await self._broadcast_thinking(session_id, {
-                "status": f"Manager retrying: fixing {len(issues)} issues...",
-                "issues": issues[:3]
-            }, task_id)
-            
-            logger.info(f"[Manager Retry] Issues: {issues}, Hint: {retry_hint}")
-            
-            # Build source context for retry
-            source_context = ""
-            if sources:
-                source_parts = []
-                for i, s in enumerate(sources[:5]):
-                    content = s.get("content", s.get("snippet", ""))
-                    title = s.get("title", f"Source {i+1}")
-                    if content:
-                        source_parts.append(f"[{title}]: {content[:500]}")
-                if source_parts:
-                    source_context = "\n\nAvailable Sources:\n" + "\n".join(source_parts)
-            
-            retry_prompt = f"""The previous response to this question was rejected by quality control.
+        """Targeted retry using validation feedback — delegates to QualityController"""
+        return await self.quality_controller.retry_with_feedback(
+            query, original_response, validation_result, context, sources, session_id, task_id
+        )
 
-Question: {query}
-
-Previous Response (REJECTED):
-{original_response[:2000]}
-
-Quality Control Feedback:
-- Issues Found: {', '.join(issues) if issues else 'None specified'}
-- Specific Fix Needed: {retry_hint or 'General improvement needed'}
-- Suggestions: {', '.join(suggestions) if suggestions else 'None'}
-
-{source_context}
-
-{context[:2000] if context else ""}
-
-Please provide an IMPROVED response that:
-1. Directly addresses the user's question
-2. Fixes ALL the issues identified above
-3. Matches the language of the user's question
-4. Is clear, complete, and accurate
-5. References source material when available
-
-Improved Response:"""
-            
-            result = await self.llm_service.generate(
-                prompt=retry_prompt,
-                system_message="You are a helpful assistant. Provide an improved, high-quality response that fixes all identified issues.",
-                temperature=0.3
-            )
-            
-            improved = result.content if hasattr(result, 'content') else str(result)
-            
-            logger.info(f"[Manager Retry] Generated improved response: {len(improved)} chars")
-            
-            return improved
-            
-        except Exception as e:
-            logger.warning(f"[Manager Retry] Failed: {e}, returning original")
-            return original_response
-    
     async def start(self):
         """Start the manager agent"""
         await super().start()
-        
+
         # Start task processing loop
         asyncio.create_task(self._task_processing_loop())
         
@@ -412,104 +248,9 @@ Improved Response:"""
             return await self._route_task(task)
     
     async def _classify_query(self, query: str, task_id: str) -> QueryClassification:
-        """
-        Classify a user query to determine the appropriate workflow.
-        
-        Returns:
-            QueryClassification with query_type: casual_chat, simple_rag, or complex_planning
-        
-        NOTE: All classification is done by LLM. No fast paths or heuristics.
-        """
-        # [REMOVED] Fast path using is_casual_message heuristics
-        # All classification MUST go through LLM for consistent decision making
-        # from agents.core.casual_chat_agent import CasualChatAgent
-        # if CasualChatAgent.is_casual_message(query):
-        #     return QueryClassification(...)
-        
-        # Fetch available knowledge bases to inform classification
-        available_kb_names = []
-        try:
-            from services.vectordb_manager import vectordb_manager
-            databases = vectordb_manager.list_databases()
-            available_kb_names = [db.get("name", "") for db in databases if db.get("name")]
-        except Exception as e:
-            logger.debug(f"Could not fetch knowledge bases for classification: {e}")
-        
-        kb_list_str = ", ".join(available_kb_names) if available_kb_names else "None"
-        
-        # Use LLM for classification (the ONLY decision maker)
-        classification_prompt = f"""You are a query router. Classify this user query into ONE category:
+        """Classify user query — delegates to QueryClassifier"""
+        return await self.query_classifier.classify(query, task_id)
 
-1. casual_chat: Greetings, small talk, thanks, farewells, questions about AI capabilities
-   Examples: "Hello", "Thanks!", "What can you do?", "你有什麼功能", "你有咩功能", "Who are you?"
-   
-2. general_knowledge: General questions that an LLM can answer from training data AND no relevant knowledge base exists
-   Examples: "What is machine learning?", "How do I write a for loop in Java?"
-   NOTE: Only use this if none of the available knowledge bases are relevant to the query topic
-
-3. knowledge_rag: Questions where we have a relevant knowledge base that can provide better/more specific answers
-   Examples: "What does my document say about X?", "Search my files for Y", "Write pinescript code" (if pinescript KB exists)
-   NOTE: If the query topic matches ANY available knowledge base below, classify as knowledge_rag to leverage that data
-   IMPORTANT: Even general programming/coding questions should use knowledge_rag if a matching knowledge base exists
-
-4. calculation: Math problems, data analysis, numerical computations
-   Examples: "Calculate 15% of 200", "What is the sum of...", "Analyze these numbers"
-
-5. translation: Language translation requests
-   Examples: "Translate this to Chinese", "How do you say X in French?"
-
-6. summarization: Summarize content, create summaries
-   Examples: "Summarize this article", "Give me the key points of..."
-
-7. solidworks_api: SolidWorks API, CAD, modeling, technical queries
-   Examples: "SolidWorks API", "如何創建草圖", "模型操作", "API方法", "VBA代碼", "C#代碼"
-
-8. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
-   Examples: "Compare X and Y", "Create a plan for...", "Analyze and recommend..."
-
-Available knowledge bases: [{kb_list_str}]
-
-User query: "{query}"
-
-Respond with ONLY the category name and a brief reason.
-Format: category|reason"""
-        
-        # [NO FALLBACK] Errors propagate for testing visibility
-        result = await self.llm_service.generate(prompt=classification_prompt, temperature=0.1)
-        response = result.content if hasattr(result, 'content') else str(result)
-        
-        # Debug trace: record classification LLM call
-        if _debug:
-            _debug.record_llm_request(
-                agent_name="manager_agent",
-                task_id=task_id,
-                prompt=f"[Classification] KB list: [{kb_list_str[:200]}...] Query: {query[:200]}",
-                session_id=""
-            )
-            _debug.record_llm_response(
-                agent_name="manager_agent",
-                task_id=task_id,
-                response=response,
-                session_id=""
-            )
-        
-        # Parse response
-        parts = response.strip().split("|", 1)
-        query_type = parts[0].strip().lower()
-        reasoning = parts[1].strip() if len(parts) > 1 else "LLM classification"
-        
-        # Validate query_type
-        valid_types = ["casual_chat", "general_knowledge", "knowledge_rag", "calculation", "translation", "summarization", "solidworks_api", "complex_planning"]
-        if query_type not in valid_types:
-            # [NO FALLBACK] LLM must return valid type - raise error for visibility
-            raise ValueError(f"LLM returned invalid query type: {query_type}. Valid types: {valid_types}")
-            
-        return QueryClassification(
-            query_type=query_type,
-            reasoning=reasoning,
-            confidence=0.85
-        )
-    
     async def _handle_knowledge_inventory(self, task: TaskAssignment) -> Dict[str, Any]:
         """
         Handle knowledge base inventory requests.

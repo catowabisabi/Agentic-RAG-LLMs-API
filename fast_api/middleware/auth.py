@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
+import os
 
 
 # ============== 數據模型 ==============
@@ -87,7 +88,7 @@ class APIKeyManager:
     def _create_default_key(self):
         """創建默認開發用 API Key"""
         # 默認 key 僅用於開發環境
-        default_key = "dev-key-agentic-rag-2024"
+        default_key = os.environ.get("ADMIN_DEFAULT_KEY")
         key_hash = self._hash_key(default_key)
         
         self.keys[key_hash] = APIKeyInfo(

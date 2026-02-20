@@ -95,6 +95,9 @@ except Exception:
 from langchain_core.documents import Document
 
 from config.config import Config
+from utils.path_security import validate_db_name, sanitize_path
+from services.vectordb.skills import SkillsManager
+from services.vectordb.backup import VectorDBBackupManager
 
 # Get config values from the Config class
 _config = Config()
@@ -255,6 +258,25 @@ class VectorDBManager:
             chunk_overlap=400,
             length_function=len
         )
+
+        # ── Sub-modules (God Class 拆分) ──────────────────────────
+        # 技能管理器：生成/更新 KB 技能描述供 Agent 路由使用
+        self.skills_mgr = SkillsManager(
+            metadata=self._metadata,
+            llm=self._llm,
+            get_collection_fn=self._get_collection,
+            save_metadata_fn=self._save_metadata,
+        )
+        # 備份管理器：建立/列出/還原 ZIP 備份
+        self.backup_mgr = VectorDBBackupManager(
+            base_path=self.base_path,
+            metadata_file=self.metadata_file,
+            metadata=self._metadata,
+            clients=self._clients,
+            collections=self._collections,
+            save_metadata_fn=self._save_metadata,
+        )
+        # ──────────────────────────────────────────────────────────
         
         logger.info(f"VectorDBManager initialized. Base path: {self.base_path}")
     
@@ -298,8 +320,12 @@ class VectorDBManager:
         if not HAS_CHROMADB:
             raise RuntimeError("ChromaDB is not installed. Please install chromadb to use vector database features.")
         
-        # Validate name
-        safe_name = db_name.lower().replace(" ", "-").replace("_", "-")
+        # Validate and sanitize the DB name first (prevents path traversal)
+        try:
+            safe_name = validate_db_name(db_name)
+        except ValueError as e:
+            raise ValueError(f"Invalid database name: {e}") from e
+
         db_path = self.base_path / safe_name
         
         if safe_name in self._metadata["databases"]:
@@ -352,118 +378,31 @@ class VectorDBManager:
             db_info["is_active"] = (name == self._active_db)
             # Include skills metadata if present
             if "skills" not in db_info:
-                db_info["skills"] = self._generate_default_skills(name, info)
+                db_info["skills"] = self.skills_mgr.generate_default_skills(name, info)
             databases.append(db_info)
         return databases
-    
+
+    # ── Skills 方法 → 委派至 SkillsManager ─────────────────────────────
+
     def _generate_default_skills(self, name: str, info: Dict) -> Dict[str, Any]:
-        """Generate default skills metadata from existing DB info"""
-        desc = info.get("description", "")
-        cat = info.get("category", "general")
-        doc_count = info.get("document_count", 0)
-        return {
-            "display_name": name.replace("-", " ").title(),
-            "description": desc or f"Knowledge base for {name}",
-            "capabilities": [],
-            "keywords": [name.replace("-", " "), cat],
-            "doc_count": doc_count,
-            "auto_generated": True
-        }
-    
+        """Generate default skills metadata — delegates to SkillsManager"""
+        return self.skills_mgr.generate_default_skills(name, info)
+
     def update_database_skills(self, db_name: str, skills: Dict[str, Any]) -> Dict[str, Any]:
-        """Update the skills metadata for a knowledge base"""
-        if db_name not in self._metadata["databases"]:
-            raise ValueError(f"Database '{db_name}' not found")
-        self._metadata["databases"][db_name]["skills"] = skills
-        self._save_metadata()
-        return self._metadata["databases"][db_name]
-    
+        """Update the skills metadata for a knowledge base — delegates to SkillsManager"""
+        return self.skills_mgr.update_skills(db_name, skills)
+
     async def generate_skills_with_llm(self, db_name: str) -> Dict[str, Any]:
-        """Use LLM to generate skills metadata by sampling DB content"""
-        if db_name not in self._metadata["databases"]:
-            raise ValueError(f"Database '{db_name}' not found")
-        
-        info = self._metadata["databases"][db_name]
-        doc_count = info.get("document_count", 0)
-        
-        # Sample some documents from the DB
-        sample_content = ""
-        if doc_count > 0:
-            try:
-                collection = self._get_collection(db_name)
-                sample = collection.get(limit=5, include=["documents", "metadatas"])
-                if sample and sample.get("documents"):
-                    previews = [d[:300] for d in sample["documents"][:5]]
-                    sample_content = "\n---\n".join(previews)
-            except Exception as e:
-                logger.warning(f"Could not sample content from {db_name}: {e}")
-        
-        prompt = f"""Analyze this knowledge base and generate structured metadata.
+        """Use LLM to generate skills metadata — delegates to SkillsManager"""
+        return await self.skills_mgr.generate_with_llm(db_name)
 
-Database name: {db_name}
-Current description: {info.get('description', '')}
-Category: {info.get('category', 'general')}
-Document count: {doc_count}
-
-Sample content (first 5 docs, truncated):
-{sample_content or 'No content available'}
-
-Generate a JSON object with:
-- display_name: A human-friendly name (e.g., "PineScript Trading Indicators")
-- description: A 1-2 sentence description of what this knowledge base contains
-- capabilities: List of 3-5 things this KB can help with (e.g., ["Write PineScript strategies", "Explain indicator logic"])
-- keywords: List of 5-10 relevant keywords for routing queries to this KB
-- topics: List of main topics covered
-
-Respond with ONLY the JSON object."""
-
-        try:
-            response = await asyncio.to_thread(self._llm.invoke, prompt)
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', response.content)
-            if json_match:
-                skills = json.loads(json_match.group())
-                skills["auto_generated"] = True
-                skills["generated_at"] = datetime.now().isoformat()
-                skills["doc_count"] = doc_count
-                
-                # Save to metadata
-                self._metadata["databases"][db_name]["skills"] = skills
-                self._save_metadata()
-                return skills
-        except Exception as e:
-            logger.error(f"Failed to generate skills for {db_name}: {e}")
-        
-        # Fallback
-        return self._generate_default_skills(db_name, info)
-    
     async def generate_all_skills(self) -> Dict[str, Any]:
-        """Generate skills metadata for ALL databases"""
-        results = {}
-        for db_name in self._metadata["databases"]:
-            try:
-                skills = await self.generate_skills_with_llm(db_name)
-                results[db_name] = skills
-            except Exception as e:
-                logger.warning(f"Skipped {db_name}: {e}")
-                results[db_name] = {"error": str(e)}
-        return results
-    
+        """Generate skills for ALL databases — delegates to SkillsManager"""
+        return await self.skills_mgr.generate_all()
+
     def get_skills_summary(self) -> List[Dict[str, Any]]:
-        """Get a summary of all KB skills for LLM routing"""
-        summary = []
-        for name, info in self._metadata["databases"].items():
-            skills = info.get("skills", self._generate_default_skills(name, info))
-            summary.append({
-                "name": name,
-                "display_name": skills.get("display_name", name),
-                "description": skills.get("description", info.get("description", "")),
-                "capabilities": skills.get("capabilities", []),
-                "keywords": skills.get("keywords", []),
-                "doc_count": info.get("document_count", 0),
-                "category": info.get("category", "general")
-            })
-        return summary
+        """Get KB skills summary for LLM routing — delegates to SkillsManager"""
+        return self.skills_mgr.get_summary()
     
     def get_database_info(self, db_name: str) -> Optional[Dict[str, Any]]:
         """Get information about a specific database"""
@@ -1391,150 +1330,30 @@ Rules:
     
     # ============== Backup & Consolidation ==============
     
+    # ── Backup 方法 → 委派至 VectorDBBackupManager ════════════════════════════
+
     def _get_backup_dir(self) -> Path:
-        """Get the backup directory path"""
-        backup_dir = self.base_path / "_backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        return backup_dir
-    
+        """Get backup directory — delegates to VectorDBBackupManager"""
+        return self.backup_mgr.get_backup_dir()
+
     def create_backup(self) -> Dict[str, Any]:
-        """
-        Create a zip backup of ALL databases (metadata + vector data).
-        Keeps max 5 backups, deletes oldest if needed.
-        """
-        backup_dir = self._get_backup_dir()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"vectordb_backup_{timestamp}.zip"
-        backup_path = backup_dir / backup_name
-        
-        # Zip all databases
-        db_count = 0
-        total_size = 0
-        with zipfile.ZipFile(str(backup_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add metadata
-            if self.metadata_file and self.metadata_file.exists():
-                zf.write(str(self.metadata_file), "db_metadata.json")
-            
-            # Add each database directory
-            for db_name, db_info in self._metadata.get("databases", {}).items():
-                db_path = Path(db_info.get("path", ""))
-                if db_path.exists() and db_path.is_dir():
-                    for root, dirs, files in os.walk(str(db_path)):
-                        # Skip backup directories
-                        if "_backups" in root:
-                            continue
-                        for file in files:
-                            file_path = Path(root) / file
-                            arcname = f"{db_name}/{file_path.relative_to(db_path)}"
-                            zf.write(str(file_path), arcname)
-                            total_size += file_path.stat().st_size
-                    db_count += 1
-        
-        # Enforce max 5 backups
-        self._cleanup_old_backups(max_count=5)
-        
-        backup_size = backup_path.stat().st_size
-        logger.info(f"Backup created: {backup_name} ({backup_size} bytes, {db_count} databases)")
-        
-        return {
-            "backup_file": backup_name,
-            "backup_path": str(backup_path),
-            "timestamp": timestamp,
-            "databases_backed_up": db_count,
-            "original_size": total_size,
-            "backup_size": backup_size
-        }
-    
+        """Create a zip backup of all databases — delegates to VectorDBBackupManager"""
+        return self.backup_mgr.create_backup()
+
     def _cleanup_old_backups(self, max_count: int = 5):
-        """Remove old backups beyond max_count"""
-        backup_dir = self._get_backup_dir()
-        backups = sorted(backup_dir.glob("vectordb_backup_*.zip"), key=lambda p: p.stat().st_mtime)
-        
-        while len(backups) > max_count:
-            oldest = backups.pop(0)
-            oldest.unlink()
-            logger.info(f"Removed old backup: {oldest.name}")
-    
+        """Remove old backups beyond max_count — delegates to VectorDBBackupManager"""
+        return self.backup_mgr._cleanup_old_backups(max_count=max_count)
+
     def list_backups(self) -> List[Dict[str, Any]]:
-        """List all available backups"""
-        backup_dir = self._get_backup_dir()
-        backups = []
-        for f in sorted(backup_dir.glob("vectordb_backup_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
-            backups.append({
-                "filename": f.name,
-                "path": str(f),
-                "size": f.stat().st_size,
-                "created_at": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
-            })
-        return backups
-    
+        """List all available backups — delegates to VectorDBBackupManager"""
+        return self.backup_mgr.list_backups()
+
     def restore_backup(self, backup_filename: str) -> Dict[str, Any]:
-        """
-        Restore from a backup zip file.
-        Creates a pre-restore backup first.
-        """
-        backup_dir = self._get_backup_dir()
-        backup_path = backup_dir / backup_filename
-        
-        if not backup_path.exists():
-            raise ValueError(f"Backup file not found: {backup_filename}")
-        
-        # Create a safety backup before restore
-        safety = self.create_backup()
-        logger.info(f"Safety backup created before restore: {safety['backup_file']}")
-        
-        # Close all clients
-        self._clients.clear()
-        self._collections.clear()
-        
-        # Extract backup
-        restored_dbs = []
-        with zipfile.ZipFile(str(backup_path), 'r') as zf:
-            # First extract metadata
-            if "db_metadata.json" in zf.namelist():
-                metadata_content = zf.read("db_metadata.json")
-                restored_metadata = json.loads(metadata_content)
-            else:
-                raise ValueError("Backup does not contain db_metadata.json")
-            
-            # Clean existing DB directories that are in the backup
-            for db_name in restored_metadata.get("databases", {}):
-                db_info = restored_metadata["databases"][db_name]
-                db_path = Path(db_info.get("path", ""))
-                if db_path.exists():
-                    shutil.rmtree(str(db_path))
-            
-            # Extract all files
-            for member in zf.namelist():
-                if member == "db_metadata.json":
-                    continue
-                # Determine which DB this belongs to
-                parts = member.split("/", 1)
-                if len(parts) >= 2:
-                    db_name = parts[0]
-                    if db_name in restored_metadata.get("databases", {}):
-                        db_path = Path(restored_metadata["databases"][db_name].get("path", ""))
-                        if db_path:
-                            target_path = db_path / parts[1]
-                            target_path.parent.mkdir(parents=True, exist_ok=True)
-                            with open(str(target_path), 'wb') as f:
-                                f.write(zf.read(member))
-                            if db_name not in restored_dbs:
-                                restored_dbs.append(db_name)
-        
-        # Restore metadata
-        self._metadata = restored_metadata
-        self._save_metadata()
+        """Restore from a backup zip file — delegates to VectorDBBackupManager"""
+        result = self.backup_mgr.restore_backup(backup_filename)
+        # Sync active_db pointer from restored metadata
         self._active_db = self._metadata.get("active")
-        
-        logger.info(f"Restored {len(restored_dbs)} databases from {backup_filename}")
-        
-        return {
-            "restored_from": backup_filename,
-            "safety_backup": safety["backup_file"],
-            "databases_restored": restored_dbs,
-            "count": len(restored_dbs)
-        }
+        return result
     
     async def consolidate_databases(self) -> Dict[str, Any]:
         """

@@ -43,64 +43,20 @@ logger = logging.getLogger(__name__)
 
 async def create_agents():
     """
-    Create and register all agents (async version).
-    
-    NOTE: This is the CANONICAL agent creation function.
-    The actual runtime uses fast_api.app.create_agents() via uvicorn.
-    This function is kept for CLI/interactive modes only.
-    For production, see fast_api/app.py create_agents().
+    Create and register all agents.
+
+    NOTE: Delegates to agents.agent_factory to avoid duplication with
+    fast_api/app.py.  Add new agents ONLY in agents/agent_factory.py.
     """
-    from agents.shared_services.agent_registry import AgentRegistry
-    
-    registry = AgentRegistry()
-    
-    # Import core agents
-    from agents.core.entry_classifier import EntryClassifier
-    from agents.core.manager_agent import ManagerAgent
-    from agents.core.rag_agent import RAGAgent
-    from agents.core.memory_agent import MemoryAgent
-    from agents.core.notes_agent import NotesAgent
-    from agents.core.validation_agent import ValidationAgent
-    from agents.core.planning_agent import PlanningAgent
-    from agents.core.thinking_agent import ThinkingAgent
-    from agents.core.roles_agent import RolesAgent
-    from agents.core.casual_chat_agent import CasualChatAgent
-    
-    # Import auxiliary agents
-    from agents.auxiliary.data_agent import DataAgent
-    from agents.auxiliary.tool_agent import ToolAgent
-    from agents.auxiliary.summarize_agent import SummarizeAgent
-    from agents.auxiliary.translate_agent import TranslateAgent
-    from agents.auxiliary.calculation_agent import CalculationAgent
-    from agents.auxiliary.memory_capture_agent import MemoryCaptureAgent
-    from agents.auxiliary.sw_agent import SWAgent
-    
-    # Register core agents (same order as fast_api/app.py)
-    logger.info("Registering core agents...")
-    await registry.register_agent(EntryClassifier())
-    await registry.register_agent(ManagerAgent())
-    await registry.register_agent(RAGAgent())
-    await registry.register_agent(MemoryAgent())
-    await registry.register_agent(NotesAgent())
-    await registry.register_agent(ValidationAgent())
-    await registry.register_agent(PlanningAgent())
-    await registry.register_agent(ThinkingAgent())
-    await registry.register_agent(RolesAgent())
-    await registry.register_agent(CasualChatAgent())
-    
-    # Register auxiliary agents
-    logger.info("Registering auxiliary agents...")
-    await registry.register_agent(DataAgent())
-    await registry.register_agent(ToolAgent())
-    await registry.register_agent(SummarizeAgent())
-    await registry.register_agent(TranslateAgent())
-    await registry.register_agent(CalculationAgent())
-    await registry.register_agent(MemoryCaptureAgent())
-    await registry.register_agent(SWAgent())
-    
-    logger.info(f"Registered {len(registry._agents)} agents")
-    
-    return registry
+    # Ensure DI container is bootstrapped before agents are created
+    try:
+        from services.container import bootstrap as _bootstrap_container
+        _bootstrap_container()
+    except Exception as _err:
+        logger.warning(f"DI container bootstrap warning: {_err}")
+
+    from agents.agent_factory import create_agents as _factory_create
+    return await _factory_create()
 
 
 async def start_agents(registry):
