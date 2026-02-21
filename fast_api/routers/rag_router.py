@@ -111,15 +111,15 @@ async def query_documents(request: QueryRequest):
 
 
 @router.post("/smart-query")
-async def smart_query(request: SmartQueryRequest):
+async def smart_query(request: SmartQueryRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Smart query with auto-routing or multi-database search"""
     try:
         if request.mode == "multi":
             # Search all databases
-            return await _multi_database_search(request)
+            return await _multi_database_search(request, vectordb_manager)
         elif request.mode == "auto":
             # Auto route to best database
-            return await _auto_route_query(request)
+            return await _auto_route_query(request, vectordb_manager)
         else:
             # Single database query
             retriever = DocumentRetriever(collection_name=request.mode)
@@ -140,7 +140,7 @@ async def smart_query(request: SmartQueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
+async def _multi_database_search(request: SmartQueryRequest, vectordb_manager: IVectorDBService) -> Dict[str, Any]:
     """Search across all databases and merge results"""
     databases = vectordb_manager.list_databases()
     all_results = []
@@ -195,7 +195,7 @@ async def _multi_database_search(request: SmartQueryRequest) -> Dict[str, Any]:
     }
 
 
-async def _auto_route_query(request: SmartQueryRequest) -> Dict[str, Any]:
+async def _auto_route_query(request: SmartQueryRequest, vectordb_manager: IVectorDBService) -> Dict[str, Any]:
     """Automatically route query to the best database(s)"""
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import ChatPromptTemplate
@@ -482,7 +482,7 @@ class QueryDatabaseRequest(BaseModel):
 
 
 @router.post("/databases")
-async def create_database(request: CreateDatabaseRequest):
+async def create_database(request: CreateDatabaseRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Create a new vector database"""
     try:
         result = vectordb_manager.create_database(
@@ -502,7 +502,7 @@ async def create_database(request: CreateDatabaseRequest):
 
 
 @router.get("/databases")
-async def list_databases():
+async def list_databases(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """List all available vector databases"""
     try:
         databases = vectordb_manager.list_databases()
@@ -529,7 +529,7 @@ class UpdateSkillsRequest(BaseModel):
 
 
 @router.get("/databases/skills")
-async def get_all_skills():
+async def get_all_skills(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Get skills summary for all knowledge bases (for routing/display)"""
     try:
         skills = vectordb_manager.get_skills_summary()
@@ -544,7 +544,7 @@ async def get_all_skills():
 
 
 @router.post("/databases/skills/generate-all")
-async def generate_all_skills():
+async def generate_all_skills(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Use LLM to generate skills metadata for ALL databases"""
     try:
         results = await vectordb_manager.generate_all_skills()
@@ -571,7 +571,7 @@ class SmartInsertRequest(BaseModel):
 
 
 @router.post("/databases/smart-insert")
-async def smart_insert_document(request: SmartInsertRequest):
+async def smart_insert_document(request: SmartInsertRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Smart insert: LLM decides which database to add content to"""
     try:
         result = await vectordb_manager.smart_insert(
@@ -598,7 +598,8 @@ async def smart_upload_document(
     title: str = Form(default=""),
     category: str = Form(default=""),
     summarize: bool = Form(default=True),
-    auto_create: bool = Form(default=True)
+    auto_create: bool = Form(default=True),
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
 ):
     """Smart upload: LLM decides which database to add uploaded file to"""
     try:
@@ -630,7 +631,8 @@ async def smart_upload_document(
 async def suggest_target_database(
     content: str = Form(...),
     title: str = Form(default=""),
-    filename: str = Form(default="")
+    filename: str = Form(default=""),
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
 ):
     """Preview which database LLM would route content to (without inserting)"""
     try:
@@ -647,7 +649,7 @@ async def suggest_target_database(
 # ============== Backup & Consolidation ==============
 
 @router.post("/databases/backup")
-async def create_backup():
+async def create_backup(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Create a zip backup of all databases"""
     try:
         result = vectordb_manager.create_backup()
@@ -661,7 +663,7 @@ async def create_backup():
 
 
 @router.get("/databases/backups")
-async def list_backups():
+async def list_backups(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """List all available backups"""
     try:
         backups = vectordb_manager.list_backups()
@@ -676,7 +678,7 @@ async def list_backups():
 
 
 @router.post("/databases/restore/{backup_filename}")
-async def restore_backup(backup_filename: str):
+async def restore_backup(backup_filename: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Restore from a backup. Creates a safety backup first."""
     backup_filename = _require_safe_backup(backup_filename)
     try:
@@ -693,7 +695,7 @@ async def restore_backup(backup_filename: str):
 
 
 @router.post("/databases/consolidate")
-async def consolidate_databases():
+async def consolidate_databases(vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """LLM-guided database consolidation. Backs up first, then merges related DBs."""
     try:
         result = await vectordb_manager.consolidate_databases()
@@ -707,7 +709,7 @@ async def consolidate_databases():
 
 
 @router.get("/databases/backup/download/{backup_filename}")
-async def download_backup(backup_filename: str):
+async def download_backup(backup_filename: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Download a backup file"""
     from fastapi.responses import FileResponse
     from utils.path_security import sanitize_path
@@ -732,7 +734,7 @@ async def download_backup(backup_filename: str):
 # ============== Database CRUD (parameterized routes AFTER fixed paths) ==============
 
 @router.get("/databases/{db_name}")
-async def get_database_info(db_name: str):
+async def get_database_info(db_name: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Get information about a specific database"""
     db_name = _require_safe_db(db_name)
     try:
@@ -751,7 +753,7 @@ async def get_database_info(db_name: str):
 
 
 @router.post("/databases/{db_name}/activate")
-async def switch_database(db_name: str):
+async def switch_database(db_name: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Switch to a different active database"""
     db_name = _require_safe_db(db_name)
     try:
@@ -769,7 +771,7 @@ async def switch_database(db_name: str):
 
 
 @router.delete("/databases/{db_name}")
-async def delete_database(db_name: str):
+async def delete_database(db_name: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Delete a vector database"""
     db_name = _require_safe_db(db_name)
     try:
@@ -786,7 +788,7 @@ async def delete_database(db_name: str):
 
 
 @router.post("/databases/insert")
-async def insert_document_to_db(request: InsertDocumentRequest):
+async def insert_document_to_db(request: InsertDocumentRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Insert a document into a vector database with optional summarization"""
     try:
         if request.summarize:
@@ -818,7 +820,7 @@ async def insert_document_to_db(request: InsertDocumentRequest):
 
 
 @router.post("/databases/query")
-async def query_database(request: QueryDatabaseRequest):
+async def query_database(request: QueryDatabaseRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Query a vector database"""
     try:
         result = await vectordb_manager.query(
@@ -839,7 +841,7 @@ async def query_database(request: QueryDatabaseRequest):
 
 
 @router.post("/databases/query-all")
-async def query_all_databases(query: str = Form(...), n_results: int = Form(default=3)):
+async def query_all_databases(query: str = Form(...), n_results: int = Form(default=3), vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Query across all databases"""
     try:
         result = await vectordb_manager.query_all_databases(
@@ -861,7 +863,8 @@ async def upload_to_database(
     database: str = Form(...),
     title: str = Form(default=""),
     category: str = Form(default="general"),
-    summarize: bool = Form(default=True)
+    summarize: bool = Form(default=True),
+    vectordb_manager: IVectorDBService = Depends(get_vdb),
 ):
     """Upload a document file to a vector database"""
     try:
@@ -905,7 +908,7 @@ async def upload_to_database(
 # ============== Document Management ==============
 
 @router.get("/databases/{db_name}/documents")
-async def list_database_documents(db_name: str, limit: int = 100, offset: int = 0):
+async def list_database_documents(db_name: str, limit: int = 100, offset: int = 0, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """List all documents in a database with their content preview"""
     db_name = _require_safe_db(db_name)
     try:
@@ -960,7 +963,7 @@ async def list_database_documents(db_name: str, limit: int = 100, offset: int = 
 
 
 @router.delete("/databases/{db_name}/documents/{doc_id}")
-async def delete_document(db_name: str, doc_id: str):
+async def delete_document(db_name: str, doc_id: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Delete a specific document from a database"""
     db_name = _require_safe_db(db_name)
     try:
@@ -987,7 +990,7 @@ async def delete_document(db_name: str, doc_id: str):
 # ============== Per-Database Skills (parameterized routes) ==============
 
 @router.get("/databases/{db_name}/skills")
-async def get_database_skills(db_name: str):
+async def get_database_skills(db_name: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Get skills metadata for a specific database"""
     try:
         info = vectordb_manager.get_database_info(db_name)
@@ -1008,7 +1011,7 @@ async def get_database_skills(db_name: str):
 
 
 @router.put("/databases/{db_name}/skills")
-async def update_database_skills(db_name: str, request: UpdateSkillsRequest):
+async def update_database_skills(db_name: str, request: UpdateSkillsRequest, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Manually update skills metadata for a database"""
     try:
         skills = request.dict(exclude_none=True)
@@ -1028,7 +1031,7 @@ async def update_database_skills(db_name: str, request: UpdateSkillsRequest):
 
 
 @router.post("/databases/{db_name}/skills/generate")
-async def generate_database_skills(db_name: str):
+async def generate_database_skills(db_name: str, vectordb_manager: IVectorDBService = Depends(get_vdb)):
     """Use LLM to auto-generate skills metadata by sampling DB content"""
     try:
         skills = await vectordb_manager.generate_skills_with_llm(db_name)
