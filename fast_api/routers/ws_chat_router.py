@@ -79,7 +79,8 @@ class ChatMessage(BaseModel):
 # WebSocket Endpoint
 # ========================================
 
-@router.websocket(\"/ws/chat\")\nasync def websocket_chat(websocket: WebSocket, chat_service: ChatService = Depends(get_chat)):
+@router.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket, chat_service: ChatService = Depends(get_chat)):
     """
     WebSocket 聊天端點
     

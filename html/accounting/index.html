@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Accounting DB Viewer</title>
+  <!-- sql.js — SQLite WASM, runs entirely in browser, zero server needed -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#0f1117; --surface:#1a1d27; --surface2:#22263a; --border:#2e3352;
+      --accent:#6c8eff; --accent2:#a78bfa; --green:#34d399; --red:#f87171;
+      --yellow:#fbbf24; --text:#e2e8f0; --muted:#8892b0; --r:8px;
+    }
+    html,body { height:100%; font-family:'Segoe UI',system-ui,sans-serif;
+                background:var(--bg); color:var(--text); font-size:14px; }
+    #app { display:flex; flex-direction:column; height:100vh; }
+
+    /* Header */
+    header { background:var(--surface); border-bottom:1px solid var(--border);
+             padding:0 24px; display:flex; align-items:center; gap:12px; height:56px; flex-shrink:0; }
+    .logo { font-size:18px; font-weight:700; color:var(--accent);
+            display:flex; align-items:center; gap:8px; }
+    .db-label { font-size:12px; color:var(--muted); background:var(--surface2);
+                padding:4px 10px; border-radius:20px; border:1px solid var(--border); }
+    .hspacer { flex:1; }
+    .btn-open { padding:7px 14px; border-radius:var(--r); border:1px solid var(--accent);
+                cursor:pointer; font-size:13px; font-weight:500;
+                display:inline-flex; align-items:center; gap:6px;
+                background:rgba(108,142,255,.12); color:var(--accent); transition:all .15s; }
+    .btn-open:hover { background:rgba(108,142,255,.25); }
+    #file-input { display:none; }
+
+    /* Landing */
+    #landing { flex:1; display:flex; flex-direction:column;
+               align-items:center; justify-content:center; gap:16px; }
+    .drop-zone { width:420px; border:2px dashed var(--border); border-radius:16px;
+                 padding:48px 32px; text-align:center; cursor:pointer;
+                 transition:all .2s; color:var(--muted); user-select:none; }
+    .drop-zone:hover,.drop-zone.drag-over { border-color:var(--accent); color:var(--accent);
+                                             background:rgba(108,142,255,.05); }
+    .drop-zone .bigicon { font-size:48px; margin-bottom:16px; }
+    .drop-zone h2 { font-size:18px; font-weight:600; color:var(--text); margin-bottom:8px; }
+    .drop-zone p  { font-size:13px; line-height:1.7; }
+    code { background:var(--surface2); padding:2px 7px; border-radius:4px; font-size:12px; }
+
+    /* Tabs */
+    #tabs-bar { background:var(--surface); border-bottom:1px solid var(--border);
+                padding:0 24px; display:none; align-items:flex-end; gap:2px;
+                flex-shrink:0; overflow-x:auto; }
+    .tab-btn { background:none; border:none; cursor:pointer; color:var(--muted);
+               padding:12px 18px 10px; font-size:13px; font-weight:500;
+               border-bottom:2px solid transparent;
+               display:flex; align-items:center; gap:7px; white-space:nowrap; transition:color .15s; }
+    .tab-btn:hover { color:var(--text); }
+    .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+    .tab-badge { font-size:11px; background:var(--surface2); border:1px solid var(--border);
+                 color:var(--muted); padding:1px 7px; border-radius:20px; }
+    .tab-btn.active .tab-badge { background:#1e2a5e; border-color:var(--accent); color:var(--accent); }
+
+    /* Toolbar */
+    #toolbar { background:var(--surface); padding:10px 24px;
+               border-bottom:1px solid var(--border);
+               display:none; align-items:center; gap:8px; flex-shrink:0; }
+    .srch { position:relative; flex:1; max-width:320px; }
+    .srch input { width:100%; background:var(--surface2); border:1px solid var(--border);
+                  border-radius:var(--r); padding:7px 12px 7px 32px;
+                  color:var(--text); font-size:13px; outline:none; transition:border .15s; }
+    .srch input:focus { border-color:var(--accent); }
+    .srch-ic { position:absolute; left:9px; top:50%; transform:translateY(-50%);
+               color:var(--muted); pointer-events:none; }
+    .btn { padding:7px 13px; border-radius:var(--r); border:1px solid var(--border);
+           cursor:pointer; font-size:13px; font-weight:500;
+           display:inline-flex; align-items:center; gap:5px;
+           background:var(--surface2); color:var(--text); transition:all .15s; white-space:nowrap; }
+    .btn:hover { border-color:var(--accent); color:var(--accent); }
+    .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .btn.primary:hover { background:#5a7df0; }
+    .btn.danger  { color:var(--red); }
+    .btn.danger:hover  { border-color:var(--red); }
+    .btn.success { color:var(--green); }
+    .btn.success:hover { border-color:var(--green); }
+    .btn:disabled { opacity:.38; cursor:not-allowed; }
+    .tbspacer { flex:1; }
+
+    /* Content */
+    #content { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+    .tpanel { display:none; flex-direction:column; height:100%; }
+    .tpanel.active { display:flex; }
+    .tscroll { flex:1; overflow:auto; padding:0 24px; }
+
+    table { width:100%; border-collapse:collapse; font-size:13px; min-width:500px; }
+    thead { position:sticky; top:0; z-index:10; }
+    thead tr { background:var(--surface2); }
+    th { padding:10px 12px; text-align:left; border-bottom:2px solid var(--border);
+         color:var(--muted); font-weight:600; white-space:nowrap; user-select:none; cursor:pointer; }
+    th:hover { color:var(--text); }
+    th.sa::after { content:' ▲'; color:var(--accent); }
+    th.sd::after { content:' ▼'; color:var(--accent); }
+    th.pk-c { color:var(--accent2); }
+    td { padding:9px 12px; border-bottom:1px solid var(--border);
+         vertical-align:top; max-width:280px; overflow:hidden; text-overflow:ellipsis; }
+    tr:hover td { background:var(--surface2); }
+    .cn { color:var(--muted); font-style:italic; }
+    .cm { color:var(--yellow); font-family:monospace; }
+    .cd { color:var(--accent2); font-size:12px; }
+    .cj { font-family:monospace; font-size:11px; color:var(--green);
+          white-space:pre-wrap; word-break:break-all; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+    .badge-reconciled { background:#0d3a2e; color:var(--green); }
+    .badge-pending    { background:#3a2a0d; color:var(--yellow); }
+    .badge-income     { background:#0d2e3a; color:#60d4f5; }
+    .badge-expense    { background:#3a1010; color:var(--red); }
+    .badge-create,.badge-reconcile,.badge-update { background:#1e2a5e; color:var(--accent); }
+    .rchk { width:16px; height:16px; cursor:pointer; accent-color:var(--accent); }
+    th.cc,td.cc { width:36px; padding-right:0; }
+
+    /* Pagination */
+    #pagination { display:none; align-items:center; gap:6px;
+                  padding:10px 24px; border-top:1px solid var(--border);
+                  background:var(--surface); flex-shrink:0; font-size:13px; }
+    .pg-info { color:var(--muted); flex:1; }
+    .pg-btn { width:32px; height:32px; border-radius:6px; border:1px solid var(--border);
+              background:var(--surface2); color:var(--text); cursor:pointer; font-size:13px;
+              display:flex; align-items:center; justify-content:center; transition:all .15s; }
+    .pg-btn:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+    .pg-btn.cur { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .pg-btn:disabled { opacity:.3; cursor:not-allowed; }
+
+    /* SQL Panel */
+    #sql-panel { display:none; flex-direction:column; gap:12px;
+                 padding:20px 24px; height:100%; overflow:auto; }
+    #sql-panel.active { display:flex; }
+    #sql-input { width:100%; background:var(--surface2); border:1px solid var(--border);
+                 border-radius:var(--r); padding:12px; color:var(--text);
+                 font-size:13px; font-family:'Cascadia Code','Consolas',monospace;
+                 outline:none; resize:vertical; min-height:90px; }
+    #sql-input:focus { border-color:var(--accent); }
+    .sql-err { color:var(--red); font-family:monospace; font-size:13px;
+               background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.3);
+               border-radius:var(--r); padding:12px; }
+
+    /* Modal */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.72);
+               display:none; align-items:center; justify-content:center; z-index:100; }
+    .overlay.open { display:flex; }
+    .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+             width:min(640px,95vw); max-height:90vh; display:flex; flex-direction:column; overflow:hidden; }
+    .mh { padding:16px 20px; border-bottom:1px solid var(--border);
+          display:flex; align-items:center; gap:10px; }
+    .mt { font-weight:600; font-size:15px; flex:1; }
+    .mx { background:none; border:none; color:var(--muted); cursor:pointer;
+          font-size:22px; line-height:1; padding:0 4px; }
+    .mx:hover { color:var(--text); }
+    .mb { padding:20px; overflow-y:auto; flex:1; }
+    .mf { padding:12px 20px; border-top:1px solid var(--border);
+          display:flex; justify-content:flex-end; gap:10px; }
+    .fr { margin-bottom:14px; }
+    .fr label { display:block; font-size:12px; color:var(--muted);
+                margin-bottom:5px; font-weight:500; text-transform:uppercase; }
+    .fr input,.fr textarea { width:100%; background:var(--surface2); border:1px solid var(--border);
+                              border-radius:var(--r); padding:8px 12px; color:var(--text);
+                              font-size:13px; outline:none; transition:border .15s; font-family:inherit; }
+    .fr input:focus,.fr textarea:focus { border-color:var(--accent); }
+    .fr textarea { resize:vertical; min-height:64px; }
+    .pknote { font-size:11px; color:var(--accent2); margin-top:4px; }
+
+    /* Toast */
+    #toast { position:fixed; bottom:24px; right:24px; z-index:999;
+             background:var(--surface2); border:1px solid var(--border);
+             border-radius:var(--r); padding:11px 16px; font-size:13px;
+             box-shadow:0 4px 20px rgba(0,0,0,.5);
+             display:none; align-items:center; gap:10px; min-width:190px; }
+    #toast.show { display:flex; animation:sup .2s ease; }
+    #toast.ok   { border-left:3px solid var(--green); }
+    #toast.err  { border-left:3px solid var(--red); }
+    @keyframes sup { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    .empty { padding:60px 24px; text-align:center; color:var(--muted); font-size:18px; }
+    ::-webkit-scrollbar { width:8px; height:8px; }
+    ::-webkit-scrollbar-track { background:var(--bg); }
+    ::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+    ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="3" width="20" height="14" rx="2"/>
+        <path d="M8 21h8M12 17v4M7 8h.01M12 8h5M7 12h.01M12 12h5"/>
+      </svg>
+      Accounting DB
+    </div>
+    <span class="db-label" id="db-label">No file loaded</span>
+    <div class="hspacer"></div>
+    <button class="btn success" id="btn-save" style="display:none" onclick="saveDB()">💾 Save .db</button>
+    <label class="btn-open" for="file-input">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      Open .db file
+    </label>
+    <input type="file" id="file-input" accept=".db,.sqlite,.sqlite3" />
+  </header>
+
+  <!-- Landing -->
+  <div id="landing">
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <div class="bigicon">🗄️</div>
+      <h2>Open SQLite Database</h2>
+      <p>Click to choose a <code>.db</code> file,<br/>or drag &amp; drop it here.<br/><br/>
+         Completely standalone — <strong style="color:var(--green)">no server needed</strong>.<br/>
+         All queries run in your browser via WebAssembly.</p>
+    </div>
+    <p style="font-size:12px;color:var(--muted)">
+      💡 用 <code>start.bat</code> 啟動時，DB 會自動載入，無需手動選擇
+    </p>
+  </div>
+
+  <!-- Tabs -->
+  <div id="tabs-bar"></div>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <div class="srch">
+      <span class="srch-ic">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+      </span>
+      <input type="text" id="search-input" placeholder="Search all columns…" />
+    </div>
+    <button class="btn primary" id="btn-add" onclick="openAddModal()">＋ Add Row</button>
+    <button class="btn" id="btn-edit" onclick="openEditModal()" disabled>✏️ Edit</button>
+    <button class="btn danger" id="btn-del" onclick="confirmDelete()" disabled>🗑 Delete</button>
+    <div class="tbspacer"></div>
+    <button class="btn" onclick="exportJSON()">⬇ JSON</button>
+    <button class="btn" onclick="exportCSV()">⬇ CSV</button>
+    <button class="btn" onclick="refreshTable()">↻ Refresh</button>
+  </div>
+
+  <!-- Content area -->
+  <div id="content">
+    <div id="sql-panel">
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <textarea id="sql-input" placeholder="SELECT * FROM accounts;&#10;-- Ctrl+Enter to run"></textarea>
+        <button class="btn primary" onclick="runSQL()" style="flex-shrink:0;height:40px">▶ Run</button>
+      </div>
+      <div id="sql-result"></div>
+    </div>
+  </div>
+
+  <!-- Pagination -->
+  <div id="pagination">
+    <span class="pg-info" id="pg-info"></span>
+    <div id="pg-btns" style="display:flex;gap:4px"></div>
+  </div>
+
+</div>
+
+<!-- Row Modal -->
+<div class="overlay" id="overlay" onclick="closeModal(event)">
+  <div class="modal">
+    <div class="mh">
+      <span class="mt" id="mtitle">Row</span>
+      <button class="mx" onclick="closeModal()">×</button>
+    </div>
+    <div class="mb" id="mbody"></div>
+    <div class="mf" id="mfoot"></div>
+  </div>
+</div>
+
+<div id="toast"><span id="tmsg"></span></div>
+
+<script>
+/* ── sql.js boot ───────────────────────────────────────────────────── */
+let SQL = null, db = null;
+initSqlJs({
+  locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${f}`
+}).then(S => {
+  SQL = S;
+  // If served from localhost (via server.py), auto-load the DB immediately
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    autoLoadFromServer();
+  }
+});
+
+/* ── State ─────────────────────────────────────────────────────────── */
+const PAGE = 50;
+let S = {
+  tables: [],          // [{name, pk, columns:[{name,type,pk}], count}]
+  active: null,        // current table name or '__sql__'
+  offset: 0,
+  sortCol: '', sortDir: 'asc',
+  search: '',
+  sel: new Set(),      // selected PKs
+  editId: null,
+};
+
+/* ── Auto-load from server ─────────────────────────────────────────── */
+async function autoLoadFromServer() {
+  const dbLabel = document.getElementById('db-label');
+  dbLabel.textContent = 'Loading accounting.db…';
+  try {
+    const res = await fetch('/accounting.db');
+    if (!res.ok) throw new Error(res.statusText);
+    const buf = await res.arrayBuffer();
+    if (db) db.close();
+    db = new SQL.Database(new Uint8Array(buf));
+    dbLabel.textContent = 'accounting.db';
+    document.getElementById('btn-save').style.display = 'flex';
+    boot();
+  } catch(e) {
+    dbLabel.textContent = 'No file loaded';
+    // Server present but DB missing — still show UI, let user pick manually
+    console.warn('Auto-load failed:', e.message);
+  }
+}
+
+/* ── File input ────────────────────────────────────────────────────── */
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(file) {
+  if (!SQL) { toast('sql.js loading, please retry…', 'err'); return; }
+  const r = new FileReader();
+  r.onload = ev => {
+    try {
+      if (db) db.close();
+      db = new SQL.Database(new Uint8Array(ev.target.result));
+      document.getElementById('db-label').textContent = file.name;
+      document.getElementById('btn-save').style.display = 'flex';
+      boot();
+    } catch(e) { toast('Cannot open DB: ' + e.message, 'err'); }
+  };
+  r.readAsArrayBuffer(file);
+}
+
+/* ── Boot ──────────────────────────────────────────────────────────── */
+function boot() {
+  document.getElementById('landing').style.display    = 'none';
+  document.getElementById('tabs-bar').style.display   = 'flex';
+  document.getElementById('toolbar').style.display    = 'flex';
+
+  // Clear previous panels
+  document.querySelectorAll('.tpanel').forEach(p => p.remove());
+  document.getElementById('sql-panel').classList.remove('active');
+
+  const names = qval("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+  S.tables = names.map(([name]) => {
+    const cols = query(`PRAGMA table_info(${qi(name)})`).map(r => ({
+      name: r[1], type: r[2] || 'TEXT', pk: r[5] > 0
+    }));
+    const pk    = cols.find(c => c.pk)?.name ?? null;
+    const count = qval(`SELECT COUNT(*) FROM ${qi(name)}`)[0][0];
+    return { name, pk, columns: cols, count };
+  });
+
+  renderTabs();
+  if (S.tables.length) switchTab(S.tables[0].name);
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────── */
+const TICONS = {accounts:'💰', transactions:'📊', audit_log:'📋',
+                users:'👤', invoices:'🧾', categories:'🏷️'};
+
+function renderTabs() {
+  const bar = document.getElementById('tabs-bar');
+  bar.innerHTML = '';
+  S.tables.forEach(t => {
+    bar.innerHTML += `<button class="tab-btn" id="tab-${t.name}" onclick="switchTab('${t.name}')">
+      ${TICONS[t.name]||'📄'} ${t.name}
+      <span class="tab-badge" id="badge-${t.name}">${t.count}</span></button>`;
+    const panel = document.createElement('div');
+    panel.className = 'tpanel'; panel.id = `panel-${t.name}`;
+    panel.innerHTML = `<div class="tscroll" id="scroll-${t.name}"></div>`;
+    document.getElementById('content').appendChild(panel);
+  });
+  bar.innerHTML += `<button class="tab-btn" id="tab-__sql__" onclick="switchTab('__sql__')">⌨️ SQL Console</button>`;
+}
+
+function switchTab(name) {
+  S.active = name; S.offset = 0; S.sortCol = ''; S.sortDir = 'asc';
+  S.search = ''; S.sel.clear();
+  document.getElementById('search-input').value = '';
+  updateBtns();
+
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tab-${name}`)?.classList.add('active');
+  document.querySelectorAll('.tpanel').forEach(p => p.classList.remove('active'));
+  document.getElementById('sql-panel').classList.remove('active');
+  document.getElementById('pagination').style.display = 'none';
+
+  const tableOnly = ['btn-add','btn-edit','btn-del'];
+  if (name === '__sql__') {
+    document.getElementById('sql-panel').classList.add('active');
+    tableOnly.forEach(id => document.getElementById(id).style.visibility = 'hidden');
+    document.getElementById('search-input').closest('.srch').style.visibility = 'hidden';
+    return;
+  }
+  tableOnly.forEach(id => document.getElementById(id).style.visibility = 'visible');
+  document.getElementById('search-input').closest('.srch').style.visibility = 'visible';
+  document.getElementById(`panel-${name}`)?.classList.add('active');
+  loadTable();
+}
+
+/* ── Load table ────────────────────────────────────────────────────── */
+function loadTable() {
+  const t = S.active; if (!t || t === '__sql__') return;
+  const info = S.tables.find(x => x.name === t); if (!info) return;
+  const cols = info.columns.map(c => c.name);
+
+  let where = '', binds = [];
+  if (S.search) {
+    where  = 'WHERE ' + cols.map(c => `CAST(${qi(c)} AS TEXT) LIKE ?`).join(' OR ');
+    binds  = Array(cols.length).fill(`%${S.search}%`);
+  }
+  let order = S.sortCol && cols.includes(S.sortCol)
+    ? `ORDER BY ${qi(S.sortCol)} ${S.sortDir === 'desc' ? 'DESC' : 'ASC'}` : '';
+
+  const total = qval(`SELECT COUNT(*) FROM ${qi(t)} ${where}`, binds)[0][0];
+  const rows  = qval(`SELECT * FROM ${qi(t)} ${where} ${order} LIMIT ? OFFSET ?`,
+                     [...binds, PAGE, S.offset]);
+
+  document.getElementById(`badge-${t}`).textContent = total;
+  info.count = total;
+  renderTable(info, cols, rows);
+  renderPager(total);
+}
+
+function refreshTable() { S.sel.clear(); updateBtns(); loadTable(); }
+
+/* ── Render table ──────────────────────────────────────────────────── */
+function renderTable(info, cols, rows) {
+  const scroll = document.getElementById(`scroll-${info.name}`);
+  if (!rows.length) {
+    scroll.innerHTML = '<div class="empty">🗄️<div style="font-size:14px;margin-top:8px">No rows</div></div>';
+    return;
+  }
+  const pkIdx = cols.indexOf(info.pk);
+  const thead = cols.map((c,i) => {
+    const sc = S.sortCol === c ? (S.sortDir === 'asc' ? 'sa' : 'sd') : '';
+    return `<th class="${sc}${i===pkIdx?' pk-c':''}" onclick="sortBy('${c}')">${c}</th>`;
+  }).join('');
+
+  const tbody = rows.map(row => {
+    const pk = row[pkIdx >= 0 ? pkIdx : 0];
+    const chk = S.sel.has(pk) ? 'checked' : '';
+    return `<tr data-pk="${pk}">
+      <td class="cc"><input type="checkbox" class="rchk" ${chk}
+            onchange="toggleRow(event,${JSON.stringify(pk)})" /></td>
+      ${row.map((v,i) => `<td title="${eh(String(v??''))}">${fmtCell(cols[i],v)}</td>`).join('')}
+    </tr>`;
+  }).join('');
+
+  scroll.innerHTML = `<table>
+    <thead><tr>
+      <th class="cc"><input type="checkbox" id="chkall" class="rchk" onchange="toggleAll(event)" /></th>
+      ${thead}
+    </tr></thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
+}
+
+function fmtCell(col, v) {
+  if (v === null || v === undefined) return '<span class="cn">null</span>';
+  const s = String(v);
+  if ((s[0]==='{' || s[0]==='[') && s.length < 1500) {
+    try { return `<span class="cj">${eh(JSON.stringify(JSON.parse(s),null,2))}</span>`; } catch{}
+  }
+  if (col==='status'||col==='action') return `<span class="badge badge-${s}">${eh(s)}</span>`;
+  if (col==='type'&&['income','expense','transfer'].includes(s))
+    return `<span class="badge badge-${s}">${eh(s)}</span>`;
+  if (col.includes('_at')||col==='transaction_date') return `<span class="cd">${eh(s)}</span>`;
+  if ((col==='balance'||col==='amount') && !isNaN(Number(v)))
+    return `<span class="cm">${(Number(v)/100).toLocaleString('zh-HK',{minimumFractionDigits:2})}</span>`;
+  if (typeof v === 'number') return `<span class="cm">${s}</span>`;
+  return eh(s.length > 100 ? s.slice(0,100)+'…' : s);
+}
+
+/* ── Sort / search ─────────────────────────────────────────────────── */
+function sortBy(c) {
+  S.sortDir = S.sortCol===c && S.sortDir==='asc' ? 'desc' : 'asc';
+  S.sortCol = c; S.offset = 0; loadTable();
+}
+let stimer;
+document.getElementById('search-input').addEventListener('input', e => {
+  clearTimeout(stimer);
+  stimer = setTimeout(() => {
+    S.search = e.target.value.trim(); S.offset = 0; S.sel.clear(); updateBtns(); loadTable();
+  }, 300);
+});
+
+/* ── Pagination ────────────────────────────────────────────────────── */
+function renderPager(total) {
+  const pg = document.getElementById('pagination');
+  if (total <= PAGE) { pg.style.display = 'none'; return; }
+  pg.style.display = 'flex';
+  const cur = Math.floor(S.offset / PAGE);
+  const pages = Math.ceil(total / PAGE);
+  document.getElementById('pg-info').textContent =
+    `${S.offset+1}–${Math.min(S.offset+PAGE,total)} / ${total}`;
+  let h = `<button class="pg-btn" onclick="goPage(${cur-1})" ${cur===0?'disabled':''}>‹</button>`;
+  for (let i=Math.max(0,cur-2); i<=Math.min(pages-1,cur+2); i++)
+    h += `<button class="pg-btn ${i===cur?'cur':''}" onclick="goPage(${i})">${i+1}</button>`;
+  h += `<button class="pg-btn" onclick="goPage(${cur+1})" ${cur===pages-1?'disabled':''}>›</button>`;
+  document.getElementById('pg-btns').innerHTML = h;
+}
+function goPage(i) { S.offset=i*PAGE; S.sel.clear(); updateBtns(); loadTable(); }
+
+/* ── Selection ─────────────────────────────────────────────────────── */
+function toggleRow(e, pk) {
+  S.sel.has(pk) ? S.sel.delete(pk) : S.sel.add(pk);
+  updateBtns(); syncChkAll();
+}
+function toggleAll(e) {
+  document.querySelectorAll('.rchk:not(#chkall)').forEach(cb => cb.checked = e.target.checked);
+  document.querySelectorAll('tbody tr').forEach(tr => {
+    const pk = isNaN(tr.dataset.pk) ? tr.dataset.pk : Number(tr.dataset.pk);
+    e.target.checked ? S.sel.add(pk) : S.sel.delete(pk);
+  });
+  updateBtns();
+}
+function syncChkAll() {
+  const all = [...document.querySelectorAll('.rchk:not(#chkall)')];
+  const ca = document.getElementById('chkall');
+  if (ca) ca.checked = all.length>0 && all.every(c=>c.checked);
+}
+function updateBtns() {
+  const n = S.sel.size;
+  document.getElementById('btn-edit').disabled = n !== 1;
+  document.getElementById('btn-del').disabled  = n === 0;
+}
+
+/* ── Modal ─────────────────────────────────────────────────────────── */
+function getInfo() { return S.tables.find(x=>x.name===S.active); }
+
+function openAddModal() {
+  const info = getInfo(); if (!info) return;
+  document.getElementById('mtitle').textContent = `➕ Add — ${info.name}`;
+  document.getElementById('mbody').innerHTML = buildForm(info.columns, {});
+  document.getElementById('mfoot').innerHTML = `
+    <button class="btn" onclick="closeModal()">Cancel</button>
+    <button class="btn primary" onclick="submitAdd()">Insert Row</button>`;
+  document.getElementById('overlay').classList.add('open');
+}
+
+function openEditModal() {
+  if (S.sel.size !== 1) return;
+  const info = getInfo(); if (!info) return;
+  const pk = [...S.sel][0];
+  const rows = qval(`SELECT * FROM ${qi(info.name)} WHERE ${qi(info.pk)} = ?`, [pk]);
+  if (!rows.length) { toast('Row not found','err'); return; }
+  const row = {}; info.columns.forEach((c,i) => row[c.name] = rows[0][i]);
+  S.editId = pk;
+  document.getElementById('mtitle').textContent = `✏️ Edit — ${info.name} #${pk}`;
+  document.getElementById('mbody').innerHTML = buildForm(info.columns, row);
+  document.getElementById('mfoot').innerHTML = `
+    <button class="btn" onclick="closeModal()">Cancel</button>
+    <button class="btn primary" onclick="submitEdit()">Save Changes</button>`;
+  document.getElementById('overlay').classList.add('open');
+}
+
+function buildForm(cols, row) {
+  return cols.map(col => {
+    const v = row[col.name] ?? '';
+    const long = ['description','old_value','new_value','comment','notes'].includes(col.name);
+    const inp = long
+      ? `<textarea id="f-${col.name}">${eh(String(v))}</textarea>`
+      : `<input type="text" id="f-${col.name}" value="${eh(String(v))}"
+               ${col.pk?'readonly style="opacity:.5"':''} />`;
+    return `<div class="fr">
+      <label>${col.name} <span style="color:var(--border);font-weight:400">${col.type}</span>
+        ${col.pk?'<span style="color:var(--accent2);margin-left:4px">PK</span>':''}</label>
+      ${inp}
+      ${col.pk?'<div class="pknote">Auto-managed primary key</div>':''}
+    </div>`;
+  }).join('');
+}
+
+function collectForm(info) {
+  const d = {};
+  info.columns.forEach(col => {
+    if (col.pk) return;
+    const el = document.getElementById(`f-${col.name}`);
+    if (el) d[col.name] = el.value.trim() || null;
+  });
+  return d;
+}
+
+function submitAdd() {
+  const info = getInfo(); if (!info) return;
+  const d = collectForm(info);
+  const cols = Object.keys(d).map(k=>qi(k)).join(',');
+  const phs  = Object.values(d).map(()=>'?').join(',');
+  try {
+    db.run(`INSERT INTO ${qi(info.name)} (${cols}) VALUES (${phs})`, Object.values(d));
+    closeModal(); toast('Row inserted ✓','ok'); refreshTable();
+  } catch(e) { toast('Insert failed: '+e.message,'err'); }
+}
+
+function submitEdit() {
+  const info = getInfo(); if (!info) return;
+  const d = collectForm(info);
+  const set = Object.keys(d).map(k=>`${qi(k)}=?`).join(',');
+  try {
+    db.run(`UPDATE ${qi(info.name)} SET ${set} WHERE ${qi(info.pk)}=?`,
+           [...Object.values(d), S.editId]);
+    closeModal(); toast('Row updated ✓','ok'); refreshTable();
+  } catch(e) { toast('Update failed: '+e.message,'err'); }
+}
+
+function confirmDelete() {
+  const info = getInfo(); if (!info) return;
+  const ids = [...S.sel];
+  if (!confirm(`Delete ${ids.length} row(s)?\n(IDs: ${ids.join(', ')})`)) return;
+  try {
+    ids.forEach(id => db.run(`DELETE FROM ${qi(info.name)} WHERE ${qi(info.pk)}=?`,[id]));
+    S.sel.clear(); updateBtns(); toast(`Deleted ${ids.length} row(s) ✓`,'ok'); refreshTable();
+  } catch(e) { toast('Delete failed: '+e.message,'err'); }
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('overlay')) return;
+  document.getElementById('overlay').classList.remove('open');
+}
+
+/* ── SQL Console ───────────────────────────────────────────────────── */
+document.getElementById('sql-input').addEventListener('keydown', e => {
+  if ((e.ctrlKey||e.metaKey) && e.key==='Enter') { e.preventDefault(); runSQL(); }
+});
+
+function runSQL() {
+  const sql = document.getElementById('sql-input').value.trim();
+  if (!sql || !db) return;
+  const out = document.getElementById('sql-result');
+  try {
+    const results = db.exec(sql);
+    if (!results.length) {
+      out.innerHTML = `<div class="empty" style="padding:20px">✅ Query executed — no rows returned</div>`;
+      // Refresh badge counts
+      S.tables.forEach(t => {
+        const c = qval(`SELECT COUNT(*) FROM ${qi(t.name)}`)[0][0];
+        document.getElementById(`badge-${t.name}`).textContent = c;
+      });
+      return;
+    }
+    out.innerHTML = results.map(res => {
+      const th = res.columns.map(c=>`<th>${eh(c)}</th>`).join('');
+      const tb = res.values.map(r =>
+        `<tr>${r.map((v,i)=>`<td>${fmtCell(res.columns[i],v)}</td>`).join('')}</tr>`
+      ).join('');
+      return `<div style="margin-bottom:16px">
+        <div style="font-size:12px;color:var(--muted);margin:8px 0">${res.values.length} row(s)</div>
+        <div style="overflow-x:auto;max-height:360px">
+          <table><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table>
+        </div></div>`;
+    }).join('');
+  } catch(e) {
+    out.innerHTML = `<div class="sql-err">⚠️ ${eh(e.message)}</div>`;
+  }
+}
+
+/* ── Export ────────────────────────────────────────────────────────── */
+function exportJSON() {
+  const info = getInfo(); if (!info) return;
+  const rows = qval(`SELECT * FROM ${qi(info.name)}`);
+  const data = rows.map(r => { const o={}; info.columns.forEach((c,i)=>o[c.name]=r[i]); return o; });
+  dl(`${info.name}.json`, JSON.stringify(data,null,2), 'application/json');
+  toast(`Exported ${info.name}.json ✓`,'ok');
+}
+function exportCSV() {
+  const info = getInfo(); if (!info) return;
+  const rows = qval(`SELECT * FROM ${qi(info.name)}`);
+  const hdr = info.columns.map(c=>ce(c.name)).join(',');
+  const body = rows.map(r=>r.map(v=>ce(v)).join(',')).join('\n');
+  dl(`${info.name}.csv`, hdr+'\n'+body, 'text/csv');
+  toast(`Exported ${info.name}.csv ✓`,'ok');
+}
+function saveDB() {
+  if (!db) return;
+  dl(document.getElementById('db-label').textContent||'database.db',
+     db.export(), 'application/octet-stream');
+  toast('DB saved ✓','ok');
+}
+
+/* ── Helpers ───────────────────────────────────────────────────────── */
+// Execute a query, return array of arrays
+function qval(sql, params=[]) {
+  if (!db) return [];
+  try {
+    const r = db.exec(sql, params);
+    return r.length ? r[0].values : [];
+  } catch(e) { console.error(sql, e); return []; }
+}
+// Execute yielding row objects (for PRAGMA etc.)
+function query(sql, params=[]) {
+  if (!db) return [];
+  const st = db.prepare(sql); st.bind(params);
+  const rows=[];
+  while(st.step()) rows.push(st.get());
+  st.free(); return rows;
+}
+// Safe identifier quoting
+function qi(n) { return `"${String(n).replace(/"/g,'""')}"`; }
+// HTML escape
+function eh(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+// CSV escape
+function ce(v) {
+  if (v===null||v===undefined) return '';
+  const s=String(v);
+  return (s.includes(',')||s.includes('"')||s.includes('\n'))
+    ? `"${s.replace(/"/g,'""')}"` : s;
+}
+// Download helper
+function dl(name, content, type) {
+  const blob = new Blob([content],{type});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+}
+
+/* ── Toast ─────────────────────────────────────────────────────────── */
+let tt;
+function toast(msg, type='ok') {
+  document.getElementById('tmsg').textContent = msg;
+  const el = document.getElementById('toast');
+  el.className = `show ${type}`;
+  clearTimeout(tt); tt = setTimeout(()=>el.className='',3000);
+}
+</script>
+</body>
+</html>

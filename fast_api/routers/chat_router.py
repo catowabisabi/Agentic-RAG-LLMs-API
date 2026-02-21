@@ -297,15 +297,15 @@ async def stream_message(
     )
 
 
+# Keep a local reference for internal helper use (background tasks can't use Depends)
+from services.chat_service import get_chat_service
+
+
 async def _process_async_task(task_id: str, request: ChatRequest):
     """後台任務處理器"""
     from services.task_manager import task_manager
     
     chat_service = get_chat_service()
-
-
-# Keep a local reference for internal helper use
-from services.chat_service import get_chat_service
     
     async def _task_handler(tid: str):
         """Handler that accepts task_id from task_manager"""
