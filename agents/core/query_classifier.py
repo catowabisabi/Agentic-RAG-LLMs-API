@@ -23,7 +23,7 @@ class QueryClassification(BaseModel):
         description=(
             "One of: casual_chat, general_knowledge, knowledge_rag, "
             "calculation, translation, summarization, solidworks_api, "
-            "complex_planning"
+            "complex_planning, accounting"
         )
     )
     reasoning: str = Field(description="Brief explanation for this classification")
@@ -39,6 +39,7 @@ _VALID_TYPES = [
     "summarization",
     "solidworks_api",
     "complex_planning",
+    "accounting",
 ]
 
 
@@ -91,6 +92,7 @@ class QueryClassifier:
 6. summarization: Summarize content, create summaries
 7. solidworks_api: SolidWorks API, CAD, modeling, technical queries
 8. complex_planning: Multi-step tasks requiring planning, comparison, or combining multiple sources
+9. accounting: Accounting, bookkeeping, transactions, invoices, budgets, reconciliation, audit trail, accounts, 入數, 對數, 月結, 預算, 發票
 
 Available knowledge bases: [{kb_list_str}]
 

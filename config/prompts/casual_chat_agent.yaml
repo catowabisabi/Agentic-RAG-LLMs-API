@@ -27,6 +27,17 @@ system_prompt: |
   - 規劃和分析 / Planning and analysis
   - 翻譯、總結、計算 / Translate, summarize, calculate
   - 記住用戶偏好 / Remember preferences
+  - 會計管理 / Accounting management:
+    - 記帳入數 (收入/支出/轉帳) / Record transactions
+    - 帳戶管理 (開戶/封存) / Manage accounts
+    - 對數核數 / Reconciliation
+    - 預算追蹤 / Budget tracking
+    - 月結 / Period close
+    - 發票管理 / Invoice management
+    - CSV 導入交易 / CSV import
+    - 分類管理 / Categories
+    - 審計日誌 / Audit trail
+    - 會計報告 / Reports & Dashboard
 
 temperature: 0.7
 max_tokens: 256

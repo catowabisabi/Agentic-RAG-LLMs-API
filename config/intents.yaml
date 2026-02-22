@@ -164,6 +164,52 @@ intents:
     examples:
       - "幫我規劃一個項目"
 
+  # ----- 會計 / Accounting -----
+  accounting:
+    description: "會計操作：記帳、入數、對數、帳戶管理、預算、發票、月結"
+    route_to: manager_agent
+    handler: accounting
+    patterns:
+      # 帳戶 / Accounts
+      - "帳戶|account|開戶|建立帳戶|帳號"
+      - "開.*帳|create.*account"
+      - "刪除.*帳|archive.*account|封存帳"
+      # 入數 / Transactions
+      - "入數|記帳|記錄|transaction|入帳"
+      - "收入|支出|income|expense|transfer"
+      - "交易|轉帳"
+      # 對數 / Reconciliation
+      - "對數|reconcil|核數|對帳"
+      - "void|作廢|取消交易"
+      # 預算 / Budget
+      - "預算|budget|overspend|超支"
+      # 月結 / Period close
+      - "月結|close.*period|period.*close|結算"
+      # 發票 / Invoices
+      - "發票|invoice|應收|receivable"
+      - "收款|paid|mark.*paid"
+      # CSV 導入
+      - "import.*csv|csv.*import|匯入|導入"
+      # 分類 / Categories
+      - "分類|categor|category"
+      # 報告 / Reports
+      - "會計報告|accounting.*report|財務報告"
+      - "dashboard|儀表板|概覽"
+      # 審計 / Audit
+      - "audit|審計|稽核|audit.*log"
+    examples:
+      - "幫我開一個新帳戶"
+      - "入數 $500 收入"
+      - "列出所有交易"
+      - "對數 transaction 1, 2, 3"
+      - "這個月的預算是多少"
+      - "月結 2026-01"
+      - "開一張發票給 ABC 公司"
+      - "導入 CSV 交易記錄"
+      - "查看 audit log"
+      - "列出所有帳戶"
+      - "會計 dashboard"
+
 # =============================================================================
 # 標準輸出格式
 # =============================================================================

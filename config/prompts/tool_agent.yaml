@@ -9,6 +9,9 @@ system_prompt: |
   - File operations (read, write, search)
   - System operations
   - Integration with external services
+  - Accounting operations: create/list accounts, add/update/list/void transactions,
+    reconcile, audit log, dashboard, account summary, categories, budgets,
+    period close, CSV import, invoices, mark paid
   
   When using tools:
   1. Validate input parameters

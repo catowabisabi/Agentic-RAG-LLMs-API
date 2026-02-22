@@ -480,6 +480,8 @@ class ManagerAgent(BaseAgent):
                 # Planning
                 "planning": self._handle_complex_query,
                 "plan_complex": self._handle_complex_query,
+                # Accounting
+                "accounting": self._handle_accounting,
                 # General
                 "general_answer": self._handle_general_knowledge,
                 "casual_response": self._handle_casual_chat,
@@ -538,6 +540,8 @@ class ManagerAgent(BaseAgent):
             return await self._handle_summarization(task)
         elif classification.query_type == "solidworks_api":
             return await self._handle_solidworks_api(task)
+        elif classification.query_type == "accounting":
+            return await self._handle_accounting(task)
         elif classification.query_type == "complex_planning":
             return await self._handle_complex_query(task)
         else:
@@ -697,6 +701,173 @@ Guidelines:
             "manager_validated": len(response_text) > 100
         }
     
+    # ====================================================== #
+    # Accounting handler
+    # ====================================================== #
+
+    _ACCOUNTING_TOOL_PROMPT = """You are an accounting assistant. Decide which tool to call based on the user message.
+
+Available tools (return the tool name + JSON parameters):
+1. accounting_create_account - Create ledger account
+   params: {"name": "str", "account_type": "general|bank|cash|receivable|payable", "currency": "HKD", "description": ""}
+2. accounting_list_accounts - List all accounts  (no params)
+3. accounting_add_transaction - Add income/expense
+   params: {"account_id": int, "type": "income|expense|transfer|adjustment", "amount": float, "description": "", "reference": "", "counterparty": "", "category": "", "transaction_date": "YYYY-MM-DD"}
+4. accounting_update_transaction - Edit a pending transaction
+   params: {"transaction_id": int, "description": "", "amount": float, "category": "", "counterparty": "", "reference": "", "transaction_date": ""}
+5. accounting_list_transactions - List/filter transactions
+   params: {"account_id": int|null, "status": "pending|reconciled|voided"|null, "start_date": ""|null, "end_date": ""|null, "limit": 100}
+6. accounting_reconcile - Reconcile transactions (對數)
+   params: {"transaction_ids": [int, ...]}
+7. accounting_void - Void a transaction
+   params: {"transaction_id": int}
+8. accounting_audit_log - View audit trail
+   params: {"entity_type": "account|transaction"|null, "entity_id": int|null, "limit": 100}
+9. accounting_summary - Account summary / dashboard of one account
+   params: {"account_id": int}
+10. accounting_dashboard - High-level overview  (no params)
+11. accounting_create_category - Create category
+    params: {"name": "str", "description": ""}
+12. accounting_list_categories - List categories  (no params)
+13. accounting_set_budget - Set budget (預算)
+    params: {"account_id": int, "period": "YYYY-MM", "amount": float, "category": ""}
+14. accounting_check_budget - Check budget status
+    params: {"account_id": int, "period": "YYYY-MM"}
+15. accounting_close_period - Month-end close (月結)
+    params: {"period": "YYYY-MM", "notes": ""}
+16. accounting_list_periods - List periods  (no params)
+17. accounting_import_csv - Bulk import CSV
+    params: {"account_id": int, "csv_text": "type,amount,description,...\\n..."}
+18. accounting_create_invoice - Create invoice
+    params: {"account_id": int, "invoice_number": "str", "amount": float, "counterparty": "", "due_date": "YYYY-MM-DD", "description": "", "tax_amount": 0.0, "currency": "HKD"}
+19. accounting_list_invoices - List invoices
+    params: {"account_id": int|null, "status": "unpaid|paid|overdue|cancelled"|null}
+20. accounting_mark_invoice_paid - Mark invoice paid
+    params: {"invoice_id": int}
+21. accounting_archive_account - Archive/delete account
+    params: {"account_id": int}
+
+RULES:
+- Return EXACTLY ONE line: tool_name|{"param": value, ...}
+- Only include parameters you can extract; omit unknowns.
+- If the user just wants information (list, dashboard, summary), use the appropriate list/dashboard tool.
+- If you cannot determine which tool, return: accounting_dashboard|{}
+- Amount is in dollars (e.g. 500.00), NOT cents.
+- Do NOT include any explanation, only the tool_name|{json} line."""
+
+    async def _handle_accounting(self, task: TaskAssignment) -> Dict[str, Any]:
+        """
+        Handle accounting requests by selecting + executing the right accounting tool.
+
+        Flow: LLM picks tool & params → ToolAgent executes → format response.
+        """
+        query = task.input_data.get("query", task.description)
+        task_id = task.task_id
+        session_id = task.input_data.get("session_id") or task.input_data.get("conversation_id")
+
+        logger.info(f"[Manager] Accounting query: {query[:80]}")
+
+        agents_involved = ["manager_agent"]
+
+        # Broadcast thinking
+        await self._broadcast_thinking(session_id, {
+            "status": "Processing accounting request…",
+            "query": query[:100]
+        }, task_id)
+
+        # Step 1 – Ask LLM which tool to call + extract parameters
+        selection_prompt = f"{self._ACCOUNTING_TOOL_PROMPT}\n\nUser message: \"{query}\""
+
+        llm_result = await self.llm_service.generate(
+            prompt=selection_prompt,
+            system_message="You are an accounting tool router. Reply with ONLY: tool_name|{{json params}}",
+            temperature=0.1,
+            session_id=self.agent_name
+        )
+        raw = (llm_result.content if hasattr(llm_result, "content") else str(llm_result)).strip()
+
+        logger.info(f"[Manager] Accounting LLM selection: {raw}")
+
+        # Parse tool_name|{json}
+        import json as _json
+        parts = raw.split("|", 1)
+        tool_name = parts[0].strip()
+        try:
+            parameters = _json.loads(parts[1]) if len(parts) > 1 else {}
+        except (_json.JSONDecodeError, IndexError):
+            parameters = {}
+
+        # Validate tool_name
+        tool_agent = self.registry.get_agent("tool_agent")
+        if not tool_agent:
+            return {
+                "response": "會計工具暫時無法使用，請稍後再試。(Tool agent unavailable)",
+                "agents_involved": agents_involved,
+                "sources": [],
+                "workflow": "accounting"
+            }
+
+        if tool_name not in getattr(tool_agent, "tools", {}):
+            logger.warning(f"[Manager] LLM selected unknown tool '{tool_name}', falling back to dashboard")
+            tool_name = "accounting_dashboard"
+            parameters = {}
+
+        agents_involved.append("tool_agent")
+
+        await self.ws_manager.broadcast_agent_activity({
+            "type": "task_assigned",
+            "agent": "tool_agent",
+            "source": self.agent_name,
+            "target": "tool_agent",
+            "content": {"task": "accounting", "tool": tool_name, "query": query[:100]},
+            "timestamp": datetime.now().isoformat(),
+            "priority": 1
+        })
+
+        # Step 2 – Execute via ToolAgent
+        acct_task = TaskAssignment(
+            task_id=task_id,
+            task_type="execute",
+            description=query,
+            input_data={
+                "tool_name": tool_name,
+                "parameters": parameters,
+                "session_id": session_id,
+            }
+        )
+        tool_result = await tool_agent.process_task(acct_task)
+
+        # Step 3 – Format a human-friendly response via LLM
+        result_json = _json.dumps(tool_result, ensure_ascii=False, default=str)
+
+        format_prompt = f"""The user asked: "{query}"
+We executed accounting tool `{tool_name}` and got this result:
+{result_json[:3000]}
+
+Write a clear, concise answer in the SAME language as the user's message.
+If the result contains a list, format it nicely.
+If there was an error, explain it helpfully."""
+
+        formatted = await self.llm_service.generate(
+            prompt=format_prompt,
+            system_message=(
+                "You are a helpful accounting assistant. "
+                "Respond in the same language the user used. "
+                "Be concise. Use bullet points or tables when appropriate."
+            ),
+            temperature=0.3,
+            session_id=session_id or self.agent_name
+        )
+        response_text = formatted.content if hasattr(formatted, "content") else str(formatted)
+
+        return {
+            "response": response_text,
+            "agents_involved": agents_involved,
+            "sources": [{"tool": tool_name, "parameters": parameters}],
+            "workflow": "accounting",
+            "tool_result": tool_result
+        }
+
     async def _handle_calculation(self, task: TaskAssignment) -> Dict[str, Any]:
         """Handle calculation/math requests using CalculationAgent"""
         query = task.input_data.get("query", task.description)
