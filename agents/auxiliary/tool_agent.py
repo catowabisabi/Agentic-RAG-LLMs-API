@@ -1346,7 +1346,150 @@ Return only valid JSON with the parameter values."""
             is_async=True,
         )
 
-        logger.info("Accounting tools registered: create_account, list_accounts, add_transaction, list_transactions, reconcile, void, audit_log, summary, dashboard")
+        self.register_tool(
+            name="accounting_update_transaction",
+            description="Update editable fields of a pending transaction",
+            parameters={
+                "transaction_id": "int - Transaction ID",
+                "description": "string - New description (optional)",
+                "reference": "string - New reference (optional)",
+                "counterparty": "string - New counterparty (optional)",
+                "category": "string - New category (optional)",
+                "transaction_date": "string - New date YYYY-MM-DD (optional)",
+                "amount": "float - New amount in dollars (optional)",
+                "tax_amount": "float - Tax amount in dollars (optional)",
+                "tax_rate": "float - Tax rate 0-100 (optional)",
+            },
+            handler=self._acct_update_transaction_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_archive_account",
+            description="Archive (soft-delete) an account",
+            parameters={
+                "account_id": "int - Account ID to archive",
+            },
+            handler=self._acct_archive_account_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_create_category",
+            description="Create a transaction category",
+            parameters={
+                "name": "string - Category name (unique)",
+                "description": "string - Description (optional)",
+            },
+            handler=self._acct_create_category_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_list_categories",
+            description="List all transaction categories",
+            parameters={},
+            handler=self._acct_list_categories_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_set_budget",
+            description="Set a budget for an account/period/category (預算)",
+            parameters={
+                "account_id": "int - Account ID",
+                "period": "string - Period YYYY-MM",
+                "amount": "float - Budget amount in dollars",
+                "category": "string - Category (optional, leave empty for total budget)",
+            },
+            handler=self._acct_set_budget_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_check_budget",
+            description="Check budget utilisation for an account and period",
+            parameters={
+                "account_id": "int - Account ID",
+                "period": "string - Period YYYY-MM",
+            },
+            handler=self._acct_check_budget_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_close_period",
+            description="Close an accounting period / perform month-end close (月結)",
+            parameters={
+                "period": "string - Period YYYY-MM",
+                "notes": "string - Closing notes (optional)",
+            },
+            handler=self._acct_close_period_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_list_periods",
+            description="List all accounting periods and their open/closed status",
+            parameters={},
+            handler=self._acct_list_periods_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_import_csv",
+            description="Bulk-import transactions from CSV text",
+            parameters={
+                "account_id": "int - Account ID",
+                "csv_text": "string - CSV content with headers: type,amount,description,reference,counterparty,category,transaction_date,tax_amount,tax_rate",
+            },
+            handler=self._acct_import_csv_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_create_invoice",
+            description="Create an invoice / receivable",
+            parameters={
+                "account_id": "int - Account ID",
+                "invoice_number": "string - Unique invoice number",
+                "amount": "float - Invoice amount in dollars",
+                "counterparty": "string - Client/vendor name (optional)",
+                "due_date": "string - Due date YYYY-MM-DD (optional)",
+                "description": "string - Description (optional)",
+                "tax_amount": "float - Tax amount in dollars (optional)",
+                "currency": "string - Currency (default: HKD)",
+            },
+            handler=self._acct_create_invoice_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_list_invoices",
+            description="List invoices with optional filters",
+            parameters={
+                "account_id": "int - Account ID (optional)",
+                "status": "string - unpaid | paid | overdue | cancelled (optional)",
+            },
+            handler=self._acct_list_invoices_handler,
+            is_async=True,
+        )
+
+        self.register_tool(
+            name="accounting_mark_invoice_paid",
+            description="Mark an invoice as paid",
+            parameters={
+                "invoice_id": "int - Invoice ID",
+            },
+            handler=self._acct_mark_invoice_paid_handler,
+            is_async=True,
+        )
+
+        logger.info(
+            "Accounting tools registered: create_account, list_accounts, add_transaction, "
+            "list_transactions, reconcile, void, audit_log, summary, dashboard, "
+            "update_transaction, archive_account, categories, budget, periods, import_csv, invoices"
+        )
 
     # --- Accounting handlers ---
 
@@ -1426,6 +1569,101 @@ Return only valid JSON with the parameter values."""
     async def _acct_dashboard_handler(self) -> Dict[str, Any]:
         try:
             result = await self.accounting_service.get_dashboard()
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_update_transaction_handler(self, transaction_id: int, **kwargs) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.update_transaction(transaction_id, **kwargs)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_archive_account_handler(self, account_id: int) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.archive_account(account_id)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_create_category_handler(self, name: str, description: str = "") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.create_category(name, description)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_list_categories_handler(self) -> Dict[str, Any]:
+        try:
+            cats = await self.accounting_service.list_categories()
+            return {"success": True, "categories": cats, "count": len(cats)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_set_budget_handler(self, account_id: int, period: str,
+                                        amount: float, category: str = "") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.set_budget(account_id, period, amount, category)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_check_budget_handler(self, account_id: int, period: str) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.check_budget_status(account_id, period)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_close_period_handler(self, period: str, notes: str = "") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.close_period(period, notes)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_list_periods_handler(self) -> Dict[str, Any]:
+        try:
+            periods = await self.accounting_service.list_periods()
+            return {"success": True, "periods": periods, "count": len(periods)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_import_csv_handler(self, account_id: int, csv_text: str) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.import_transactions_csv(account_id, csv_text)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_create_invoice_handler(self, account_id: int, invoice_number: str,
+                                            amount: float, counterparty: str = "",
+                                            due_date: str = "", description: str = "",
+                                            tax_amount: float = 0.0,
+                                            currency: str = "HKD") -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.create_invoice(
+                account_id=account_id, invoice_number=invoice_number,
+                amount=amount, counterparty=counterparty,
+                due_date=due_date, description=description,
+                tax_amount=tax_amount, currency=currency,
+            )
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_list_invoices_handler(self, account_id: int = None,
+                                           status: str = None) -> Dict[str, Any]:
+        try:
+            invoices = await self.accounting_service.list_invoices(account_id=account_id, status=status)
+            return {"success": True, "invoices": invoices, "count": len(invoices)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _acct_mark_invoice_paid_handler(self, invoice_id: int) -> Dict[str, Any]:
+        try:
+            result = await self.accounting_service.mark_invoice_paid(invoice_id)
             return {"success": True, **result}
         except Exception as e:
             return {"success": False, "error": str(e)}

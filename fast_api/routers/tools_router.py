@@ -75,6 +75,58 @@ class AuditLogRequest(BaseModel):
     entity_id: Optional[int] = None
     limit: int = 100
 
+class UpdateTransactionRequest(BaseModel):
+    description: Optional[str] = None
+    reference: Optional[str] = None
+    counterparty: Optional[str] = None
+    category: Optional[str] = None
+    transaction_date: Optional[str] = None
+    amount: Optional[float] = None
+    tax_amount: Optional[float] = None
+    tax_rate: Optional[float] = None
+
+class CategoryRequest(BaseModel):
+    name: str
+    description: str = ""
+
+class BudgetRequest(BaseModel):
+    account_id: int
+    period: str  # YYYY-MM
+    amount: float
+    category: str = ""
+
+class BudgetStatusRequest(BaseModel):
+    account_id: int
+    period: str  # YYYY-MM
+
+class PeriodCloseRequest(BaseModel):
+    period: str  # YYYY-MM
+    notes: str = ""
+
+class ImportCSVRequest(BaseModel):
+    account_id: int
+    csv_text: str
+
+class InvoiceRequest(BaseModel):
+    account_id: int
+    invoice_number: str
+    amount: float
+    counterparty: str = ""
+    due_date: str = ""
+    description: str = ""
+    tax_amount: float = 0.0
+    currency: str = "HKD"
+
+class ListInvoicesRequest(BaseModel):
+    account_id: Optional[int] = None
+    status: Optional[str] = None
+
+class AccountingReportRequest(BaseModel):
+    account_id: int
+    title: str = "Accounting Report"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
 # --- OCR ---
 
 class OCRFileRequest(BaseModel):
@@ -90,9 +142,7 @@ class GenerateReportRequest(BaseModel):
     markdown_content: str
     author: str = "System"
 
-class AccountingReportRequest(BaseModel):
-    account_id: int
-    title: str = "Accounting Report"
+# (AccountingReportRequest defined above in accounting section)
 
 # --- File Manager ---
 
@@ -252,6 +302,129 @@ async def get_audit_log(req: AuditLogRequest):
     return {"success": True, "audit_log": logs, "count": len(logs)}
 
 
+@router.patch("/accounting/transactions/{transaction_id}")
+async def update_transaction(transaction_id: int, req: UpdateTransactionRequest):
+    """Update a pending transaction's fields."""
+    svc = _get_accounting_service()
+    result = await svc.update_transaction(
+        transaction_id,
+        description=req.description,
+        reference=req.reference,
+        counterparty=req.counterparty,
+        category=req.category,
+        transaction_date=req.transaction_date,
+        amount=req.amount,
+        tax_amount=req.tax_amount,
+        tax_rate=req.tax_rate,
+    )
+    return {"success": True, **result}
+
+
+@router.delete("/accounting/accounts/{account_id}")
+async def archive_account(account_id: int):
+    """Archive (soft-delete) an account."""
+    svc = _get_accounting_service()
+    result = await svc.archive_account(account_id)
+    return {"success": True, **result}
+
+
+@router.post("/accounting/categories")
+async def create_category(req: CategoryRequest):
+    """Create a transaction category."""
+    svc = _get_accounting_service()
+    result = await svc.create_category(req.name, req.description)
+    return {"success": True, **result}
+
+
+@router.get("/accounting/categories")
+async def list_categories():
+    """List all categories."""
+    svc = _get_accounting_service()
+    cats = await svc.list_categories()
+    return {"success": True, "categories": cats, "count": len(cats)}
+
+
+@router.delete("/accounting/categories/{category_id}")
+async def delete_category(category_id: int):
+    """Delete a category."""
+    svc = _get_accounting_service()
+    result = await svc.delete_category(category_id)
+    return {"success": True, **result}
+
+
+@router.post("/accounting/budgets")
+async def set_budget(req: BudgetRequest):
+    """Set (upsert) a budget for an account/period/category."""
+    svc = _get_accounting_service()
+    result = await svc.set_budget(req.account_id, req.period, req.amount, req.category)
+    return {"success": True, **result}
+
+
+@router.post("/accounting/budgets/status")
+async def budget_status(req: BudgetStatusRequest):
+    """Check budget utilisation for an account in a given period."""
+    svc = _get_accounting_service()
+    result = await svc.check_budget_status(req.account_id, req.period)
+    return {"success": True, **result}
+
+
+@router.post("/accounting/periods/close")
+async def close_period(req: PeriodCloseRequest):
+    """Close an accounting period (月結)."""
+    svc = _get_accounting_service()
+    result = await svc.close_period(req.period, req.notes)
+    return {"success": True, **result}
+
+
+@router.get("/accounting/periods")
+async def list_periods():
+    """List accounting periods."""
+    svc = _get_accounting_service()
+    periods = await svc.list_periods()
+    return {"success": True, "periods": periods, "count": len(periods)}
+
+
+@router.post("/accounting/import/csv")
+async def import_csv(req: ImportCSVRequest):
+    """Bulk-import transactions from CSV text."""
+    svc = _get_accounting_service()
+    result = await svc.import_transactions_csv(req.account_id, req.csv_text)
+    return {"success": True, **result}
+
+
+@router.post("/accounting/invoices")
+async def create_invoice(req: InvoiceRequest):
+    """Create an invoice / receivable."""
+    svc = _get_accounting_service()
+    result = await svc.create_invoice(
+        account_id=req.account_id,
+        invoice_number=req.invoice_number,
+        amount=req.amount,
+        counterparty=req.counterparty,
+        due_date=req.due_date,
+        description=req.description,
+        tax_amount=req.tax_amount,
+        currency=req.currency,
+    )
+    return {"success": True, **result}
+
+
+@router.post("/accounting/invoices/list")
+async def list_invoices(req: ListInvoicesRequest):
+    """List invoices with optional filters."""
+    svc = _get_accounting_service()
+    invoices = await svc.list_invoices(account_id=req.account_id, status=req.status)
+    return {"success": True, "invoices": invoices, "count": len(invoices)}
+
+
+@router.patch("/accounting/invoices/{invoice_id}/paid")
+async def mark_invoice_paid(invoice_id: int):
+    """Mark an invoice as paid."""
+    svc = _get_accounting_service()
+    result = await svc.mark_invoice_paid(invoice_id)
+    return {"success": True, **result}
+
+
 # ============================================================
 # OCR endpoints
 # ============================================================
@@ -335,16 +508,23 @@ async def generate_report(req: GenerateReportRequest):
 
 @router.post("/reports/accounting")
 async def generate_accounting_report(req: AccountingReportRequest):
-    """Generate an accounting report for a specific account."""
+    """Generate an accounting report for a specific account with optional date range."""
     try:
         acct_svc = _get_accounting_service()
         pdf_svc = _get_pdf_report_service()
         summary = await acct_svc.get_account_summary(req.account_id)
-        txn_data = await acct_svc.list_transactions(account_id=req.account_id, limit=500)
+        txn_data = await acct_svc.list_transactions(
+            account_id=req.account_id,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            limit=500,
+        )
         result = await pdf_svc.generate_accounting_report(
             account_summary=summary,
             transactions=txn_data.get("transactions", []),
             title=req.title,
+            start_date=req.start_date,
+            end_date=req.end_date,
         )
         return {"success": True, **result}
     except ValueError as e:

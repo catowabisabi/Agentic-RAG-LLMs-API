@@ -153,17 +153,40 @@ class PDFReportService:
         transactions: List[Dict[str, Any]],
         title: str = "Accounting Report",
         author: str = "System",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate an accounting report from structured data.
         Builds Markdown content then calls ``generate_report``.
+        Optional start_date / end_date filter the transaction list and appear in the report header.
         """
+        # Apply date range filter if provided
+        if start_date or end_date:
+            filtered = []
+            for t in transactions:
+                d = t.get("transaction_date", "")
+                if start_date and d < start_date:
+                    continue
+                if end_date and d > end_date:
+                    continue
+                filtered.append(t)
+            transactions = filtered
+
         acct = account_summary.get("account", {})
+        date_range_line = ""
+        if start_date or end_date:
+            date_range_line = f"**Date Range:** {start_date or '—'} → {end_date or '—'}"
+
         lines = [
             f"# {title}",
             "",
             f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             f"**Author:** {author}",
+        ]
+        if date_range_line:
+            lines.append(date_range_line)
+        lines += [
             "",
             "---",
             "",
